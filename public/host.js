@@ -7,6 +7,7 @@ let offset = 0;
 let paused = false;
 let waitingAck = false;
 let streamEnded = false;
+let fileFullySent = false;
 let roomReady = false;
 let timerInterval = null;
 let streamStartTime = null;
@@ -81,6 +82,7 @@ function startStream(selectedFile) {
   paused = false;
   waitingAck = false;
   streamEnded = false;
+  fileFullySent = false;
   roomReady = false;
   streamStartTime = null;
   totalPausedMs = 0;
@@ -140,9 +142,8 @@ function sendNextChunk() {
     offset += e.target.result.byteLength;
 
     if (offset >= file.size) {
-      streamEnded = true;
-      ws.send(JSON.stringify({ type: 'end' }));
-      showDone();
+      fileFullySent = true;
+      btnPause.textContent = '■ Encerrar';
     }
   };
   reader.onerror = () => {
@@ -155,6 +156,14 @@ function sendNextChunk() {
 // ── Controls ──────────────────────────────────────────────────────────────────
 btnPause.addEventListener('click', () => {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+  if (fileFullySent) {
+    streamEnded = true;
+    ws.send(JSON.stringify({ type: 'end' }));
+    showDone();
+    return;
+  }
+
   paused = !paused;
 
   if (paused) {
@@ -198,6 +207,7 @@ btnRestart.addEventListener('click', () => {
   ws = null;
   roomReady = false;
   streamEnded = false;
+  fileFullySent = false;
   streamStartTime = null;
   totalPausedMs = 0;
   pausedAt = null;
