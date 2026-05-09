@@ -67,4 +67,14 @@ describe('GET /video/:filename', () => {
     const res = await request(app).get('/video/nao-existe.mp4');
     expect(res.status).toBe(404);
   });
+
+  it('retorna 206 com Content-Range para Range header válido', async () => {
+    const app = createApp();
+    const res = await request(app)
+      .get(`/video/${testFile}`)
+      .set('Range', 'bytes=0-9');
+    expect(res.status).toBe(206);
+    expect(res.headers['content-range']).toMatch(/^bytes 0-9\//);
+    expect(res.headers['content-type']).toBe('video/mp4');
+  });
 });
