@@ -1,17 +1,38 @@
 const WebSocket = require('ws');
+const http = require('http');
 const request = require('supertest');
-const { createApp, createServer, createRoom, addChunk, generateRoomId, MAX_BUFFER_CHUNKS } = require('../server');
+const { createApp, createServer, createRoom, addChunk, generateRoomId } = require('../server');
 
-jest.setTimeout(10000);
+jest.setTimeout(15000);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+function makeRooms() {
+  return new Map();
+}
+
 function startServer() {
   return new Promise(resolve => {
-    const app = createApp();
-    const server = createServer(app);
+    const rooms = makeRooms();
+    const app = createApp(rooms);
+    const server = createServer(app, rooms);
+    server._rooms = rooms;
+
+    server._drainHttpViewers = () => {
+      for (const room of rooms.values()) {
+        room.httpViewers.forEach(res => { try { res.end(); } catch (_) {} });
+        room.httpViewers.clear();
+      }
+    };
+
     server.listen(0, () => resolve(server));
   });
+}
+
+function closeServer(server) {
+  server._drainHttpViewers();
+  server.closeAllConnections();
+  return new Promise(resolve => server.close(resolve));
 }
 
 function wsConnect(server, params) {
@@ -22,16 +43,54 @@ function wsConnect(server, params) {
   return ws;
 }
 
-function waitMessage(ws) {
-  return new Promise((resolve, reject) => {
-    ws.once('message', data => {
-      const str = Buffer.isBuffer(data) ? data.toString() : (typeof data === 'string' ? data : null);
-      if (str) {
-        try { return resolve(JSON.parse(str)); } catch {}
+/**
+ * Attach a message queue to ws immediately after creation.
+ * Use nextMsg() to await the next JSON message in order.
+ * Binary messages are stored separately in ws._binary[].
+ */
+function attachQueue(ws) {
+  ws._jsonQueue = [];
+  ws._jsonWaiters = [];
+  ws._binary = [];
+  ws._binaryWaiters = [];
+
+  ws.on('message', data => {
+    const str = Buffer.isBuffer(data) ? data.toString() : (typeof data === 'string' ? data : null);
+    if (str) {
+      let parsed;
+      try { parsed = JSON.parse(str); } catch { return; }
+      if (ws._jsonWaiters.length) {
+        ws._jsonWaiters.shift()(parsed);
+      } else {
+        ws._jsonQueue.push(parsed);
       }
-      resolve(data);
-    });
-    ws.once('error', reject);
+    } else {
+      if (ws._binaryWaiters.length) {
+        ws._binaryWaiters.shift()(data);
+      } else {
+        ws._binary.push(data);
+      }
+    }
+  });
+}
+
+function nextMsg(ws) {
+  if (ws._jsonQueue.length) return Promise.resolve(ws._jsonQueue.shift());
+  return new Promise((resolve, reject) => {
+    const onError = err => { ws._jsonWaiters = ws._jsonWaiters.filter(r => r !== resolve); reject(err); };
+    const resolver = msg => { ws.removeListener('error', onError); resolve(msg); };
+    ws._jsonWaiters.push(resolver);
+    ws.once('error', onError);
+  });
+}
+
+function nextBin(ws) {
+  if (ws._binary.length) return Promise.resolve(ws._binary.shift());
+  return new Promise((resolve, reject) => {
+    const onError = err => { ws._binaryWaiters = ws._binaryWaiters.filter(r => r !== resolve); reject(err); };
+    const resolver = data => { ws.removeListener('error', onError); resolve(data); };
+    ws._binaryWaiters.push(resolver);
+    ws.once('error', onError);
   });
 }
 
@@ -43,31 +102,18 @@ function waitOpen(ws) {
   });
 }
 
-/**
- * Collect all JSON messages until the socket closes (or timeout).
- * Resolves with an array of parsed JSON objects.
- */
-function collectMessages(ws, timeoutMs = 3000) {
+function collectAllMessages(ws, timeoutMs = 3000) {
   return new Promise((resolve, reject) => {
     const msgs = [];
     const timer = setTimeout(() => resolve(msgs), timeoutMs);
-
     ws.on('message', data => {
       const str = Buffer.isBuffer(data) ? data.toString() : (typeof data === 'string' ? data : null);
       if (str) {
         try { msgs.push(JSON.parse(str)); } catch {}
       }
     });
-
-    ws.on('close', () => {
-      clearTimeout(timer);
-      resolve(msgs);
-    });
-
-    ws.on('error', err => {
-      clearTimeout(timer);
-      reject(err);
-    });
+    ws.on('close', () => { clearTimeout(timer); resolve(msgs); });
+    ws.on('error', err => { clearTimeout(timer); reject(err); });
   });
 }
 
@@ -92,6 +138,7 @@ describe('createRoom', () => {
     expect(room.mimeType).toBe('video/webm');
     expect(room.broadcaster).toBeNull();
     expect(room.viewers).toBeInstanceOf(Set);
+    expect(room.httpViewers).toBeInstanceOf(Set);
     expect(room.buffer).toEqual([]);
   });
 });
@@ -103,13 +150,12 @@ describe('addChunk', () => {
     expect(room.buffer).toHaveLength(1);
   });
 
-  it('respeita MAX_BUFFER_CHUNKS removendo o mais antigo', () => {
+  it('acumula múltiplos chunks', () => {
     const room = createRoom('video/webm');
-    for (let i = 0; i <= MAX_BUFFER_CHUNKS; i++) {
-      addChunk(room, Buffer.from(`chunk${i}`));
-    }
-    expect(room.buffer).toHaveLength(MAX_BUFFER_CHUNKS);
-    expect(room.buffer[0].toString()).toBe('chunk1');
+    addChunk(room, Buffer.from('a'));
+    addChunk(room, Buffer.from('b'));
+    addChunk(room, Buffer.from('c'));
+    expect(room.buffer).toHaveLength(3);
   });
 });
 
@@ -118,13 +164,14 @@ describe('addChunk', () => {
 describe('WebSocket — host cria sala', () => {
   let server;
   beforeEach(async () => { server = await startServer(); });
-  afterEach(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
+  afterEach(() => closeServer(server));
 
   it('recebe roomId após enviar create', async () => {
     const ws = wsConnect(server, { role: 'host' });
+    attachQueue(ws);
     await waitOpen(ws);
     ws.send(JSON.stringify({ type: 'create', mimeType: 'video/webm' }));
-    const msg = await waitMessage(ws);
+    const msg = await nextMsg(ws);
     expect(msg.type).toBe('room');
     expect(msg.roomId).toMatch(/^[A-Z0-9]{6}$/);
     ws.close();
@@ -134,112 +181,144 @@ describe('WebSocket — host cria sala', () => {
 describe('WebSocket — viewer conecta em sala inexistente', () => {
   let server;
   beforeEach(async () => { server = await startServer(); });
-  afterEach(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
+  afterEach(() => closeServer(server));
 
   it('recebe erro e conexão é fechada', async () => {
     const ws = wsConnect(server, { role: 'viewer', room: 'NAOEXISTE' });
-    // Use collectMessages which handles open/message/close in any order
-    const msgs = await collectMessages(ws, 5000);
+    const msgs = await collectAllMessages(ws, 5000);
     expect(msgs.some(m => m.type === 'error')).toBe(true);
-    // Socket must be closed (readyState CLOSED = 3)
     expect(ws.readyState).toBe(WebSocket.CLOSED);
   });
 });
 
-describe('WebSocket — relay host → viewer', () => {
+describe('WebSocket — viewer recebe init e mensagens de controle', () => {
   let server;
-  beforeEach(async () => { server = await startServer(); });
-  afterEach(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
+  let openSockets;
 
-  it('chunk binário enviado pelo host chega ao viewer', async () => {
-    const host = wsConnect(server, { role: 'host' });
-    await waitOpen(host);
-    host.send(JSON.stringify({ type: 'create', mimeType: 'video/webm' }));
-    const roomMsg = await waitMessage(host);
-    const { roomId } = roomMsg;
-
-    // Set up viewer message collector BEFORE connecting so no messages are missed
-    const viewer = wsConnect(server, { role: 'viewer', room: roomId });
-    const viewerMsgs = []; // collected JSON messages
-    const viewerBinary = []; // collected binary messages
-    let viewerMsgResolvers = [];
-    let viewerBinResolvers = [];
-
-    viewer.on('message', data => {
-      const str = Buffer.isBuffer(data) ? data.toString() : (typeof data === 'string' ? data : null);
-      if (str) {
-        try {
-          const msg = JSON.parse(str);
-          viewerMsgs.push(msg);
-          if (viewerMsgResolvers.length) viewerMsgResolvers.shift()(msg);
-          return;
-        } catch {}
-      }
-      viewerBinary.push(data);
-      if (viewerBinResolvers.length) viewerBinResolvers.shift()(data);
-    });
-
-    const nextViewerMsg = () => viewerMsgs.length
-      ? Promise.resolve(viewerMsgs.shift())
-      : new Promise(r => viewerMsgResolvers.push(r));
-    const nextViewerBin = () => viewerBinary.length
-      ? Promise.resolve(viewerBinary.shift())
-      : new Promise(r => viewerBinResolvers.push(r));
-
-    await waitOpen(viewer);
-
-    const initMsg = await nextViewerMsg();
-    expect(initMsg.type).toBe('init');
-    expect(initMsg.mimeType).toBe('video/webm');
-
-    const chunk = Buffer.from('fake video chunk data');
-    host.send(chunk);
-
-    const received = await nextViewerBin();
-    expect(Buffer.isBuffer(received) || received instanceof ArrayBuffer).toBe(true);
-
-    host.close();
-    viewer.close();
+  beforeEach(async () => {
+    server = await startServer();
+    openSockets = [];
   });
 
-  it('viewer que entra depois recebe buffer acumulado', async () => {
-    const host = wsConnect(server, { role: 'host' });
+  afterEach(async () => {
+    // Close all sockets explicitly before closing the server
+    openSockets.forEach(ws => { try { ws.terminate(); } catch (_) {} });
+    await closeServer(server);
+  });
+
+  function track(ws) { openSockets.push(ws); return ws; }
+
+  it('viewer recebe init com mimeType correto', async () => {
+    const host = track(wsConnect(server, { role: 'host' }));
+    attachQueue(host);
     await waitOpen(host);
-    host.send(JSON.stringify({ type: 'create', mimeType: 'video/webm' }));
-    const { roomId } = await waitMessage(host);
+    host.send(JSON.stringify({ type: 'create', mimeType: 'video/mp4' }));
+    const roomMsg = await nextMsg(host);
+    const { roomId } = roomMsg;
+
+    // Attach queue BEFORE connecting so no messages are missed
+    const viewer = track(wsConnect(server, { role: 'viewer', room: roomId }));
+    attachQueue(viewer);
+    await waitOpen(viewer);
+
+    // Drain messages until we see 'init' (skip 'viewers' count if it arrives first)
+    let initMsg = null;
+    for (let i = 0; i < 5; i++) {
+      const m = await nextMsg(viewer);
+      if (m.type === 'init') { initMsg = m; break; }
+    }
+    expect(initMsg).not.toBeNull();
+    expect(initMsg.mimeType).toBe('video/mp4');
+  });
+
+  it('host envia pause e viewer recebe evento de controle', async () => {
+    const host = track(wsConnect(server, { role: 'host' }));
+    attachQueue(host);
+    await waitOpen(host);
+    host.send(JSON.stringify({ type: 'create', mimeType: 'video/mp4' }));
+    const { roomId } = await nextMsg(host);
+
+    const viewer = track(wsConnect(server, { role: 'viewer', room: roomId }));
+    attachQueue(viewer);
+    await waitOpen(viewer);
+
+    // Drain init + any viewers messages
+    let seenInit = false;
+    while (!seenInit) {
+      const m = await nextMsg(viewer);
+      if (m.type === 'init') seenInit = true;
+    }
+    // Consume any pending viewers-count messages
+    await new Promise(r => setTimeout(r, 50));
+
+    host.send(JSON.stringify({ type: 'pause' }));
+
+    // Wait for pause message (skip any viewers count messages)
+    let pauseMsg = null;
+    for (let i = 0; i < 5; i++) {
+      const m = await nextMsg(viewer);
+      if (m.type === 'pause') { pauseMsg = m; break; }
+    }
+    expect(pauseMsg).not.toBeNull();
+  });
+
+  it('host envia chunk binário — viewer NÃO recebe binário (só controle via WS)', async () => {
+    const host = track(wsConnect(server, { role: 'host' }));
+    attachQueue(host);
+    await waitOpen(host);
+    host.send(JSON.stringify({ type: 'create', mimeType: 'video/mp4' }));
+    const { roomId } = await nextMsg(host);
+
+    const viewer = track(wsConnect(server, { role: 'viewer', room: roomId }));
+    attachQueue(viewer);
+    await waitOpen(viewer);
+
+    // Drain init
+    let seenInit = false;
+    while (!seenInit) {
+      const m = await nextMsg(viewer);
+      if (m.type === 'init') seenInit = true;
+    }
+
+    host.send(Buffer.from('fake video chunk'));
+    // Wait for ack
+    let seenAck = false;
+    while (!seenAck) {
+      const m = await nextMsg(host);
+      if (m.type === 'ack') seenAck = true;
+    }
+
+    // Give a moment for any binary relay to arrive
+    await new Promise(r => setTimeout(r, 200));
+    expect(viewer._binary).toHaveLength(0);
+  });
+});
+
+describe('WebSocket — host chunks acumulados no buffer da sala', () => {
+  let server;
+  beforeEach(async () => { server = await startServer(); });
+  afterEach(() => closeServer(server));
+
+  it('dois chunks enviados pelo host ficam no buffer da sala', async () => {
+    const host = wsConnect(server, { role: 'host' });
+    attachQueue(host);
+    await waitOpen(host);
+    host.send(JSON.stringify({ type: 'create', mimeType: 'video/mp4' }));
+    const { roomId } = await nextMsg(host);
 
     host.send(Buffer.from('chunk1'));
-    await waitMessage(host); // ack
+    let ack1 = false;
+    while (!ack1) { const m = await nextMsg(host); if (m.type === 'ack') ack1 = true; }
+
     host.send(Buffer.from('chunk2'));
-    await waitMessage(host); // ack
+    let ack2 = false;
+    while (!ack2) { const m = await nextMsg(host); if (m.type === 'ack') ack2 = true; }
 
-    // Collect ALL messages from viewer before and after open to avoid race
-    const viewer = wsConnect(server, { role: 'viewer', room: roomId });
-    const allMsgs = await new Promise((resolve, reject) => {
-      const collected = [];
-      const timer = setTimeout(() => resolve(collected), 3000);
-      viewer.on('message', data => {
-        const str = Buffer.isBuffer(data) ? data.toString() : (typeof data === 'string' ? data : null);
-        if (!str) return;
-        try {
-          const msg = JSON.parse(str);
-          collected.push(msg);
-          if (msg.type === 'buffer') {
-            clearTimeout(timer);
-            // Wait a tiny bit for any remaining messages then resolve
-            setTimeout(() => resolve(collected), 100);
-          }
-        } catch {}
-      });
-      viewer.on('error', reject);
-    });
+    const room = server._rooms.get(roomId);
+    expect(room).toBeDefined();
+    expect(room.buffer).toHaveLength(2);
 
-    const bufferMsg = allMsgs.find(m => m.type === 'buffer');
-    expect(bufferMsg).toBeDefined();
-    expect(bufferMsg.chunks).toBe(2);
-
-    host.close();
-    viewer.close();
+    host.terminate();
   });
 });
 
@@ -247,8 +326,61 @@ describe('WebSocket — relay host → viewer', () => {
 
 describe('GET /', () => {
   it('serve index.html com status 200', async () => {
-    const app = createApp();
+    const rooms = makeRooms();
+    const app = createApp(rooms);
     const res = await request(app).get('/');
     expect(res.status).toBe(200);
+  });
+});
+
+describe('GET /stream/:roomId', () => {
+  it('retorna 404 para sala inexistente', async () => {
+    const rooms = makeRooms();
+    const app = createApp(rooms);
+    const res = await request(app).get('/stream/NAOEXISTE');
+    expect(res.status).toBe(404);
+  });
+
+  it('retorna Content-Type correto e buffer acumulado para sala existente', done => {
+    const rooms = makeRooms();
+    const app = createApp(rooms);
+
+    const roomId = 'TEST01';
+    const room = createRoom('video/mp4');
+    addChunk(room, Buffer.from('fakechunk1'));
+    addChunk(room, Buffer.from('fakechunk2'));
+    rooms.set(roomId, room);
+
+    const srv = http.createServer(app);
+    srv.listen(0, () => {
+      const port = srv.address().port;
+      const chunks = [];
+
+      const req = http.get(`http://localhost:${port}/stream/${roomId}`, res => {
+        expect(res.statusCode).toBe(200);
+        expect(res.headers['content-type']).toMatch('video/mp4');
+
+        res.on('data', d => chunks.push(d));
+
+        setTimeout(() => {
+          req.destroy();
+          // Close open HTTP viewers so srv.close() can resolve
+          room.httpViewers.forEach(r => { try { r.end(); } catch (_) {} });
+          room.httpViewers.clear();
+          srv.closeAllConnections();
+          srv.close(() => {
+            const body = Buffer.concat(chunks).toString();
+            expect(body).toContain('fakechunk1');
+            expect(body).toContain('fakechunk2');
+            done();
+          });
+        }, 300);
+      });
+
+      req.on('error', err => {
+        if (err.code !== 'ECONNRESET') done(err);
+        else done();
+      });
+    });
   });
 });
