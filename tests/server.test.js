@@ -1,132 +1,254 @@
+const WebSocket = require('ws');
 const request = require('supertest');
-const path = require('path');
-const fs = require('fs');
+const { createApp, createServer, createRoom, addChunk, generateRoomId, MAX_BUFFER_CHUNKS } = require('../server');
 
-// Importamos createApp separado para não iniciar o servidor nos testes
-const { createApp, UPLOAD_DIR } = require('../server');
+jest.setTimeout(10000);
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function startServer() {
+  return new Promise(resolve => {
+    const app = createApp();
+    const server = createServer(app);
+    server.listen(0, () => resolve(server));
+  });
+}
+
+function wsConnect(server, params) {
+  const port = server.address().port;
+  const qs = new URLSearchParams(params).toString();
+  const ws = new WebSocket(`ws://localhost:${port}/ws?${qs}`);
+  ws.binaryType = 'arraybuffer';
+  return ws;
+}
+
+function waitMessage(ws) {
+  return new Promise((resolve, reject) => {
+    ws.once('message', data => {
+      const str = Buffer.isBuffer(data) ? data.toString() : (typeof data === 'string' ? data : null);
+      if (str) {
+        try { return resolve(JSON.parse(str)); } catch {}
+      }
+      resolve(data);
+    });
+    ws.once('error', reject);
+  });
+}
+
+function waitOpen(ws) {
+  return new Promise((resolve, reject) => {
+    if (ws.readyState === WebSocket.OPEN) return resolve();
+    ws.once('open', resolve);
+    ws.once('error', reject);
+  });
+}
+
+/**
+ * Collect all JSON messages until the socket closes (or timeout).
+ * Resolves with an array of parsed JSON objects.
+ */
+function collectMessages(ws, timeoutMs = 3000) {
+  return new Promise((resolve, reject) => {
+    const msgs = [];
+    const timer = setTimeout(() => resolve(msgs), timeoutMs);
+
+    ws.on('message', data => {
+      const str = Buffer.isBuffer(data) ? data.toString() : (typeof data === 'string' ? data : null);
+      if (str) {
+        try { msgs.push(JSON.parse(str)); } catch {}
+      }
+    });
+
+    ws.on('close', () => {
+      clearTimeout(timer);
+      resolve(msgs);
+    });
+
+    ws.on('error', err => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
+}
+
+// ── Unit tests — room management ─────────────────────────────────────────────
+
+describe('generateRoomId', () => {
+  it('gera ID de 6 caracteres alfanuméricos maiúsculos', () => {
+    const id = generateRoomId();
+    expect(id).toHaveLength(6);
+    expect(id).toMatch(/^[A-Z0-9]{6}$/);
+  });
+
+  it('gera IDs únicos em chamadas sucessivas', () => {
+    const ids = new Set(Array.from({ length: 100 }, generateRoomId));
+    expect(ids.size).toBeGreaterThan(90);
+  });
+});
+
+describe('createRoom', () => {
+  it('retorna estrutura correta', () => {
+    const room = createRoom('video/webm');
+    expect(room.mimeType).toBe('video/webm');
+    expect(room.broadcaster).toBeNull();
+    expect(room.viewers).toBeInstanceOf(Set);
+    expect(room.buffer).toEqual([]);
+  });
+});
+
+describe('addChunk', () => {
+  it('adiciona chunk ao buffer', () => {
+    const room = createRoom('video/webm');
+    addChunk(room, Buffer.from('a'));
+    expect(room.buffer).toHaveLength(1);
+  });
+
+  it('respeita MAX_BUFFER_CHUNKS removendo o mais antigo', () => {
+    const room = createRoom('video/webm');
+    for (let i = 0; i <= MAX_BUFFER_CHUNKS; i++) {
+      addChunk(room, Buffer.from(`chunk${i}`));
+    }
+    expect(room.buffer).toHaveLength(MAX_BUFFER_CHUNKS);
+    expect(room.buffer[0].toString()).toBe('chunk1');
+  });
+});
+
+// ── Integration tests — WebSocket ─────────────────────────────────────────────
+
+describe('WebSocket — host cria sala', () => {
+  let server;
+  beforeEach(async () => { server = await startServer(); });
+  afterEach(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
+
+  it('recebe roomId após enviar create', async () => {
+    const ws = wsConnect(server, { role: 'host' });
+    await waitOpen(ws);
+    ws.send(JSON.stringify({ type: 'create', mimeType: 'video/webm' }));
+    const msg = await waitMessage(ws);
+    expect(msg.type).toBe('room');
+    expect(msg.roomId).toMatch(/^[A-Z0-9]{6}$/);
+    ws.close();
+  });
+});
+
+describe('WebSocket — viewer conecta em sala inexistente', () => {
+  let server;
+  beforeEach(async () => { server = await startServer(); });
+  afterEach(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
+
+  it('recebe erro e conexão é fechada', async () => {
+    const ws = wsConnect(server, { role: 'viewer', room: 'NAOEXISTE' });
+    // Use collectMessages which handles open/message/close in any order
+    const msgs = await collectMessages(ws, 5000);
+    expect(msgs.some(m => m.type === 'error')).toBe(true);
+    // Socket must be closed (readyState CLOSED = 3)
+    expect(ws.readyState).toBe(WebSocket.CLOSED);
+  });
+});
+
+describe('WebSocket — relay host → viewer', () => {
+  let server;
+  beforeEach(async () => { server = await startServer(); });
+  afterEach(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
+
+  it('chunk binário enviado pelo host chega ao viewer', async () => {
+    const host = wsConnect(server, { role: 'host' });
+    await waitOpen(host);
+    host.send(JSON.stringify({ type: 'create', mimeType: 'video/webm' }));
+    const roomMsg = await waitMessage(host);
+    const { roomId } = roomMsg;
+
+    // Set up viewer message collector BEFORE connecting so no messages are missed
+    const viewer = wsConnect(server, { role: 'viewer', room: roomId });
+    const viewerMsgs = []; // collected JSON messages
+    const viewerBinary = []; // collected binary messages
+    let viewerMsgResolvers = [];
+    let viewerBinResolvers = [];
+
+    viewer.on('message', data => {
+      const str = Buffer.isBuffer(data) ? data.toString() : (typeof data === 'string' ? data : null);
+      if (str) {
+        try {
+          const msg = JSON.parse(str);
+          viewerMsgs.push(msg);
+          if (viewerMsgResolvers.length) viewerMsgResolvers.shift()(msg);
+          return;
+        } catch {}
+      }
+      viewerBinary.push(data);
+      if (viewerBinResolvers.length) viewerBinResolvers.shift()(data);
+    });
+
+    const nextViewerMsg = () => viewerMsgs.length
+      ? Promise.resolve(viewerMsgs.shift())
+      : new Promise(r => viewerMsgResolvers.push(r));
+    const nextViewerBin = () => viewerBinary.length
+      ? Promise.resolve(viewerBinary.shift())
+      : new Promise(r => viewerBinResolvers.push(r));
+
+    await waitOpen(viewer);
+
+    const initMsg = await nextViewerMsg();
+    expect(initMsg.type).toBe('init');
+    expect(initMsg.mimeType).toBe('video/webm');
+
+    const chunk = Buffer.from('fake video chunk data');
+    host.send(chunk);
+
+    const received = await nextViewerBin();
+    expect(Buffer.isBuffer(received) || received instanceof ArrayBuffer).toBe(true);
+
+    host.close();
+    viewer.close();
+  });
+
+  it('viewer que entra depois recebe buffer acumulado', async () => {
+    const host = wsConnect(server, { role: 'host' });
+    await waitOpen(host);
+    host.send(JSON.stringify({ type: 'create', mimeType: 'video/webm' }));
+    const { roomId } = await waitMessage(host);
+
+    host.send(Buffer.from('chunk1'));
+    await waitMessage(host); // ack
+    host.send(Buffer.from('chunk2'));
+    await waitMessage(host); // ack
+
+    // Collect ALL messages from viewer before and after open to avoid race
+    const viewer = wsConnect(server, { role: 'viewer', room: roomId });
+    const allMsgs = await new Promise((resolve, reject) => {
+      const collected = [];
+      const timer = setTimeout(() => resolve(collected), 3000);
+      viewer.on('message', data => {
+        const str = Buffer.isBuffer(data) ? data.toString() : (typeof data === 'string' ? data : null);
+        if (!str) return;
+        try {
+          const msg = JSON.parse(str);
+          collected.push(msg);
+          if (msg.type === 'buffer') {
+            clearTimeout(timer);
+            // Wait a tiny bit for any remaining messages then resolve
+            setTimeout(() => resolve(collected), 100);
+          }
+        } catch {}
+      });
+      viewer.on('error', reject);
+    });
+
+    const bufferMsg = allMsgs.find(m => m.type === 'buffer');
+    expect(bufferMsg).toBeDefined();
+    expect(bufferMsg.chunks).toBe(2);
+
+    host.close();
+    viewer.close();
+  });
+});
+
+// ── HTTP ──────────────────────────────────────────────────────────────────────
 
 describe('GET /', () => {
-  it('responde 200 com HTML', async () => {
+  it('serve index.html com status 200', async () => {
     const app = createApp();
     const res = await request(app).get('/');
     expect(res.status).toBe(200);
-    expect(res.headers['content-type']).toMatch(/html/);
-  });
-});
-
-describe('POST /api/upload', () => {
-  it('retorna 400 se nenhum arquivo for enviado', async () => {
-    const app = createApp();
-    const res = await request(app).post('/api/upload');
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBeDefined();
-  });
-
-  it('faz upload de um arquivo e retorna filename e url', async () => {
-    const app = createApp();
-    const tmpFile = path.join(__dirname, 'test-video.mp4');
-    fs.writeFileSync(tmpFile, 'fake video content');
-
-    const res = await request(app)
-      .post('/api/upload')
-      .attach('video', tmpFile);
-
-    fs.unlinkSync(tmpFile);
-    if (res.body.filename) {
-      const uploaded = path.join(UPLOAD_DIR, res.body.filename);
-      if (fs.existsSync(uploaded)) fs.unlinkSync(uploaded);
-    }
-
-    expect(res.status).toBe(200);
-    expect(res.body.filename).toBeDefined();
-    expect(res.body.url).toMatch(/\/video\//);
-  });
-});
-
-describe('GET /video/:filename', () => {
-  const testFile = 'test-stream.mp4';
-  const testFilePath = path.join(UPLOAD_DIR, testFile);
-
-  beforeEach(() => {
-    if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-    fs.writeFileSync(testFilePath, 'fake video bytes for streaming test');
-  });
-
-  afterEach(() => {
-    if (fs.existsSync(testFilePath)) fs.unlinkSync(testFilePath);
-  });
-
-  it('retorna 200 e o conteúdo do vídeo', async () => {
-    const app = createApp();
-    const res = await request(app).get(`/video/${testFile}`);
-    expect(res.status).toBe(200);
-  });
-
-  it('retorna 404 para arquivo inexistente', async () => {
-    const app = createApp();
-    const res = await request(app).get('/video/nao-existe.mp4');
-    expect(res.status).toBe(404);
-  });
-
-  it('retorna 206 com Content-Range para Range header válido', async () => {
-    const app = createApp();
-    const res = await request(app)
-      .get(`/video/${testFile}`)
-      .set('Range', 'bytes=0-9');
-    expect(res.status).toBe(206);
-    expect(res.headers['content-range']).toMatch(/^bytes 0-9\//);
-    expect(res.headers['content-type']).toBe('video/mp4');
-  });
-});
-
-describe('GET /api/videos', () => {
-  const testFile = 'test-list.mp4';
-
-  beforeEach(() => {
-    if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-    fs.writeFileSync(path.join(UPLOAD_DIR, testFile), 'fake');
-  });
-
-  afterEach(() => {
-    const p = path.join(UPLOAD_DIR, testFile);
-    if (fs.existsSync(p)) fs.unlinkSync(p);
-  });
-
-  it('retorna lista de vídeos com filename e expiresAt', async () => {
-    const app = createApp();
-    const res = await request(app).get('/api/videos');
-    expect(res.status).toBe(200);
-    expect(Array.isArray(res.body)).toBe(true);
-    const video = res.body.find(v => v.filename === testFile);
-    expect(video).toBeDefined();
-    expect(video.expiresAt).toBeDefined();
-    expect(video.url).toMatch(/\/video\//);
-  });
-});
-
-describe('DELETE /api/videos/:filename', () => {
-  const testFile = 'test-delete.mp4';
-
-  beforeEach(() => {
-    if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-    fs.writeFileSync(path.join(UPLOAD_DIR, testFile), 'fake');
-  });
-
-  afterEach(() => {
-    const p = path.join(UPLOAD_DIR, testFile);
-    if (fs.existsSync(p)) fs.unlinkSync(p);
-  });
-
-  it('apaga o arquivo e retorna 200', async () => {
-    const app = createApp();
-    const res = await request(app).delete(`/api/videos/${testFile}`);
-    expect(res.status).toBe(200);
-    expect(fs.existsSync(path.join(UPLOAD_DIR, testFile))).toBe(false);
-  });
-
-  it('retorna 404 para arquivo inexistente', async () => {
-    const app = createApp();
-    const res = await request(app).delete('/api/videos/nao-existe.mp4');
-    expect(res.status).toBe(404);
   });
 });
