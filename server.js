@@ -80,6 +80,37 @@ function createApp() {
     });
   });
 
+  app.get('/api/videos', (req, res) => {
+    if (!fs.existsSync(UPLOAD_DIR)) return res.json([]);
+
+    const files = fs.readdirSync(UPLOAD_DIR).map(filename => {
+      const filePath = path.join(UPLOAD_DIR, filename);
+      const stat = fs.statSync(filePath);
+      const expiresAt = new Date(stat.mtimeMs + EXPIRE_HOURS * 60 * 60 * 1000);
+      return {
+        filename,
+        url: `/video/${filename}`,
+        size: stat.size,
+        uploadedAt: stat.mtime,
+        expiresAt
+      };
+    });
+
+    res.json(files);
+  });
+
+  app.delete('/api/videos/:filename', (req, res) => {
+    const filename = path.basename(req.params.filename);
+    const filePath = path.join(UPLOAD_DIR, filename);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Vídeo não encontrado.' });
+    }
+
+    fs.unlinkSync(filePath);
+    res.json({ success: true });
+  });
+
   return app;
 }
 

@@ -78,3 +78,50 @@ describe('GET /video/:filename', () => {
     expect(res.headers['content-type']).toBe('video/mp4');
   });
 });
+
+describe('GET /api/videos', () => {
+  const testFile = 'test-list.mp4';
+
+  beforeEach(() => {
+    if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+    fs.writeFileSync(path.join(UPLOAD_DIR, testFile), 'fake');
+  });
+
+  afterEach(() => {
+    const p = path.join(UPLOAD_DIR, testFile);
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  });
+
+  it('retorna lista de vídeos com filename e expiresAt', async () => {
+    const app = createApp();
+    const res = await request(app).get('/api/videos');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+    const video = res.body.find(v => v.filename === testFile);
+    expect(video).toBeDefined();
+    expect(video.expiresAt).toBeDefined();
+    expect(video.url).toMatch(/\/video\//);
+  });
+});
+
+describe('DELETE /api/videos/:filename', () => {
+  const testFile = 'test-delete.mp4';
+
+  beforeEach(() => {
+    if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+    fs.writeFileSync(path.join(UPLOAD_DIR, testFile), 'fake');
+  });
+
+  it('apaga o arquivo e retorna 200', async () => {
+    const app = createApp();
+    const res = await request(app).delete(`/api/videos/${testFile}`);
+    expect(res.status).toBe(200);
+    expect(fs.existsSync(path.join(UPLOAD_DIR, testFile))).toBe(false);
+  });
+
+  it('retorna 404 para arquivo inexistente', async () => {
+    const app = createApp();
+    const res = await request(app).delete('/api/videos/nao-existe.mp4');
+    expect(res.status).toBe(404);
+  });
+});
