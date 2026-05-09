@@ -1,0 +1,18 @@
+{
+  "name": "site-cinema",
+  "version": "1.0.0",
+  "description": "Cinema Drive-in — streaming temporário de vídeos",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "jest --testEnvironment node --forceExit"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "multer": "^1.4.5-lts.1"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^6.3.4"
+  }
+}
