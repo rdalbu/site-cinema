@@ -116,7 +116,7 @@ function createApp() {
   return app;
 }
 
-function startExpiryJob(app) {
+function startExpiryJob() {
   function deleteExpired() {
     if (!fs.existsSync(UPLOAD_DIR)) return;
     const now = Date.now();
@@ -124,6 +124,7 @@ function startExpiryJob(app) {
       const filePath = path.join(UPLOAD_DIR, filename);
       try {
         const stat = fs.statSync(filePath);
+        if (!stat.isFile()) return;
         const age = now - stat.mtimeMs;
         if (age > EXPIRE_HOURS * 60 * 60 * 1000) {
           fs.unlinkSync(filePath);
@@ -136,7 +137,9 @@ function startExpiryJob(app) {
   }
 
   deleteExpired(); // roda imediatamente ao iniciar
-  return setInterval(deleteExpired, 60 * 60 * 1000); // a cada 1 hora
+  const handle = setInterval(deleteExpired, 60 * 60 * 1000); // a cada 1 hora
+  handle.unref();
+  return handle;
 }
 
 // Só inicia o servidor se executado diretamente (não nos testes)
