@@ -154,6 +154,17 @@ function connect() {
           streamStatus.textContent = '● AO VIVO';
           streamState.textContent = 'Ao vivo';
           break;
+        case 'seek':
+          queue.length = 0;
+          playAttempted = false;
+          if (sourceBuffer && mediaSource && mediaSource.readyState === 'open') {
+            if (sourceBuffer.updating) sourceBuffer.abort();
+            if (sourceBuffer.buffered.length > 0) {
+              try { sourceBuffer.remove(0, Infinity); } catch (_) {}
+            }
+          }
+          streamState.textContent = 'Sincronizando...';
+          break;
         case 'end':
           ended = true;
           endStream();

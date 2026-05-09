@@ -24,14 +24,40 @@ const btnCopy      = document.getElementById('btn-copy');
 const btnPause     = document.getElementById('btn-pause');
 const btnStop      = document.getElementById('btn-stop');
 const btnRestart   = document.getElementById('btn-restart');
+const hostPlayer   = document.getElementById('host-player');
 const toast        = document.getElementById('toast');
 
-// ── Toast ─────────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 function showToast(msg, duration = 2500) {
   toast.textContent = msg;
   toast.classList.add('show');
   setTimeout(() => toast.classList.remove('show'), duration);
 }
+
+function formatTime(s) {
+  const sec = Math.floor(s) || 0;
+  const m = Math.floor(sec / 60);
+  return `${m}:${String(sec % 60).padStart(2, '0')}`;
+}
+
+// ── Local player events (registered once) ─────────────────────────────────────
+hostPlayer.addEventListener('loadedmetadata', () => {
+  progressText.textContent = `0:00 / ${formatTime(hostPlayer.duration)}`;
+});
+
+hostPlayer.addEventListener('timeupdate', () => {
+  if (!file) return;
+  progressText.textContent = `${formatTime(hostPlayer.currentTime)} / ${formatTime(hostPlayer.duration || 0)}`;
+});
+
+hostPlayer.addEventListener('seeked', () => {
+  if (!file || !ws || ws.readyState !== WebSocket.OPEN || streamEnded || paused) return;
+  const ratio = hostPlayer.currentTime / (hostPlayer.duration || 1);
+  offset = Math.floor(ratio * file.size);
+  waitingAck = false;
+  ws.send(JSON.stringify({ type: 'seek', time: hostPlayer.currentTime }));
+  sendNextChunk();
+});
 
 // ── File selection ────────────────────────────────────────────────────────────
 dropZone.addEventListener('click', () => fileInput.click());
@@ -49,7 +75,6 @@ fileInput.addEventListener('change', () => {
 
 // ── Stream ────────────────────────────────────────────────────────────────────
 function startStream(selectedFile) {
-  // Tear down any existing connection before opening a new one
   if (ws) {
     ws.onclose = null;
     ws.onerror = null;
@@ -82,6 +107,7 @@ function startStream(selectedFile) {
       const url = `${location.origin}/watch/${msg.roomId}`;
       shareUrl.textContent = url;
       fileName.textContent = file.name;
+      hostPlayer.src = URL.createObjectURL(file);
       stepSelect.classList.add('hidden');
       stepLive.classList.remove('hidden');
       sendNextChunk();
@@ -118,7 +144,6 @@ function sendNextChunk() {
 
     const pct = Math.min(100, Math.round((offset / file.size) * 100));
     progressBar.style.width = pct + '%';
-    progressText.textContent = pct + '%';
 
     if (offset >= file.size) {
       streamEnded = true;
@@ -174,9 +199,10 @@ btnRestart.addEventListener('click', () => {
   stepSelect.classList.remove('hidden');
   fileInput.value = '';
   progressBar.style.width = '0%';
-  progressText.textContent = '0%';
+  progressText.textContent = '0:00 / 0:00';
   viewerCount.textContent = '0';
-  file = null; // releases the File handle
+  hostPlayer.src = '';
+  file = null;
   ws = null;
   roomReady = false;
   streamEnded = false;

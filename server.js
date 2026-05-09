@@ -60,6 +60,12 @@ function handleHost(ws, rooms) {
       } else if (msg.type === 'pause' || msg.type === 'resume') {
         const room = rooms.get(roomId);
         if (room) broadcastToViewers(room, JSON.stringify({ type: msg.type }));
+      } else if (msg.type === 'seek') {
+        const room = rooms.get(roomId);
+        if (room) {
+          room.buffer = []; // stale data irrelevant after seek
+          broadcastToViewers(room, JSON.stringify({ type: 'seek' }));
+        }
       } else if (msg.type === 'end') {
         const room = rooms.get(roomId);
         if (room) broadcastToViewers(room, JSON.stringify({ type: 'end' }));
