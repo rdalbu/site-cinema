@@ -15,6 +15,29 @@ function createApp() {
 
   app.use(express.static(path.join(__dirname, 'public')));
 
+  const multer = require('multer');
+
+  const storage = multer.diskStorage({
+    destination: UPLOAD_DIR,
+    filename: (req, file, cb) => {
+      const timestamp = Date.now();
+      const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+      cb(null, `${timestamp}-${safe}`);
+    }
+  });
+
+  const upload = multer({ storage });
+
+  app.post('/api/upload', upload.single('video'), (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
+    }
+    res.json({
+      filename: req.file.filename,
+      url: `/video/${req.file.filename}`
+    });
+  });
+
   return app;
 }
 
