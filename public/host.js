@@ -7,6 +7,7 @@ let offset = 0;
 let paused = false;
 let waitingAck = false;
 let streamEnded = false;
+let roomReady = false;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const dropZone     = document.getElementById('drop-zone');
@@ -48,11 +49,19 @@ fileInput.addEventListener('change', () => {
 
 // ── Stream ────────────────────────────────────────────────────────────────────
 function startStream(selectedFile) {
+  // Tear down any existing connection before opening a new one
+  if (ws) {
+    ws.onclose = null;
+    ws.onerror = null;
+    ws.close();
+  }
+
   file = selectedFile;
   offset = 0;
   paused = false;
   waitingAck = false;
   streamEnded = false;
+  roomReady = false;
 
   const mimeType = file.type || 'video/mp4';
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -65,9 +74,11 @@ function startStream(selectedFile) {
 
   ws.onmessage = (e) => {
     if (typeof e.data !== 'string') return;
-    const msg = JSON.parse(e.data);
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
 
     if (msg.type === 'room') {
+      roomReady = true;
       const url = `${location.origin}/watch/${msg.roomId}`;
       shareUrl.textContent = url;
       fileName.textContent = file.name;
@@ -83,7 +94,12 @@ function startStream(selectedFile) {
   };
 
   ws.onclose = () => {
-    if (!streamEnded) showDone();
+    if (streamEnded) return;
+    if (roomReady) {
+      showDone();
+    } else {
+      showToast('Falha ao conectar com o servidor.');
+    }
   };
 
   ws.onerror = () => showToast('Erro de conexão WebSocket.');
@@ -107,8 +123,12 @@ function sendNextChunk() {
     if (offset >= file.size) {
       streamEnded = true;
       ws.send(JSON.stringify({ type: 'end' }));
-      setTimeout(() => showDone(), 500);
+      showDone();
     }
+  };
+  reader.onerror = () => {
+    showToast('Erro ao ler o arquivo. Tente novamente.');
+    streamEnded = true;
   };
   reader.readAsArrayBuffer(slice);
 }
@@ -132,16 +152,22 @@ btnStop.addEventListener('click', () => {
 
 btnCopy.addEventListener('click', () => {
   const url = shareUrl.textContent;
-  navigator.clipboard.writeText(url).catch(() => {
-    const ta = document.createElement('textarea');
-    ta.value = url;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-  });
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(url).catch(() => copyFallback(url));
+  } else {
+    copyFallback(url);
+  }
   showToast('Link copiado!');
 });
+
+function copyFallback(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand('copy');
+  document.body.removeChild(ta);
+}
 
 btnRestart.addEventListener('click', () => {
   stepDone.classList.add('hidden');
@@ -150,8 +176,10 @@ btnRestart.addEventListener('click', () => {
   progressBar.style.width = '0%';
   progressText.textContent = '0%';
   viewerCount.textContent = '0';
-  file = null;
+  file = null; // releases the File handle
   ws = null;
+  roomReady = false;
+  streamEnded = false;
 });
 
 function showDone() {
