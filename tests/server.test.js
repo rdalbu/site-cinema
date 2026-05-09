@@ -15,15 +15,6 @@ describe('GET /', () => {
 });
 
 describe('POST /api/upload', () => {
-  afterEach(() => {
-    // Limpa uploads de teste
-    if (fs.existsSync(UPLOAD_DIR)) {
-      fs.readdirSync(UPLOAD_DIR).forEach(f => {
-        if (f.startsWith('test-')) fs.unlinkSync(path.join(UPLOAD_DIR, f));
-      });
-    }
-  });
-
   it('retorna 400 se nenhum arquivo for enviado', async () => {
     const app = createApp();
     const res = await request(app).post('/api/upload');
@@ -33,7 +24,6 @@ describe('POST /api/upload', () => {
 
   it('faz upload de um arquivo e retorna filename e url', async () => {
     const app = createApp();
-    // Cria um arquivo temporário de teste
     const tmpFile = path.join(__dirname, 'test-video.mp4');
     fs.writeFileSync(tmpFile, 'fake video content');
 
@@ -42,6 +32,10 @@ describe('POST /api/upload', () => {
       .attach('video', tmpFile);
 
     fs.unlinkSync(tmpFile);
+    if (res.body.filename) {
+      const uploaded = path.join(UPLOAD_DIR, res.body.filename);
+      if (fs.existsSync(uploaded)) fs.unlinkSync(uploaded);
+    }
 
     expect(res.status).toBe(200);
     expect(res.body.filename).toBeDefined();

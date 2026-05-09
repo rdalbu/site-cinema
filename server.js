@@ -1,6 +1,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const multer = require('multer');
 
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const EXPIRE_HOURS = parseInt(process.env.EXPIRE_HOURS || '24', 10);
@@ -14,8 +15,6 @@ function createApp() {
   }
 
   app.use(express.static(path.join(__dirname, 'public')));
-
-  const multer = require('multer');
 
   const storage = multer.diskStorage({
     destination: UPLOAD_DIR,
