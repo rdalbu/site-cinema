@@ -112,6 +112,11 @@ describe('DELETE /api/videos/:filename', () => {
     fs.writeFileSync(path.join(UPLOAD_DIR, testFile), 'fake');
   });
 
+  afterEach(() => {
+    const p = path.join(UPLOAD_DIR, testFile);
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  });
+
   it('apaga o arquivo e retorna 200', async () => {
     const app = createApp();
     const res = await request(app).delete(`/api/videos/${testFile}`);

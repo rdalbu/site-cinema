@@ -80,35 +80,37 @@ function createApp() {
     });
   });
 
-  app.get('/api/videos', (req, res) => {
-    if (!fs.existsSync(UPLOAD_DIR)) return res.json([]);
-
-    const files = fs.readdirSync(UPLOAD_DIR).map(filename => {
-      const filePath = path.join(UPLOAD_DIR, filename);
-      const stat = fs.statSync(filePath);
-      const expiresAt = new Date(stat.mtimeMs + EXPIRE_HOURS * 60 * 60 * 1000);
-      return {
-        filename,
-        url: `/video/${filename}`,
-        size: stat.size,
-        uploadedAt: stat.mtime,
-        expiresAt
-      };
-    });
-
-    res.json(files);
+  app.get('/api/videos', async (req, res) => {
+    try {
+      const filenames = await fs.promises.readdir(UPLOAD_DIR).catch(() => []);
+      const files = (await Promise.all(filenames.map(async filename => {
+        const filePath = path.join(UPLOAD_DIR, filename);
+        const stat = await fs.promises.stat(filePath);
+        if (!stat.isFile()) return null;
+        return {
+          filename,
+          url: `/video/${filename}`,
+          size: stat.size,
+          uploadedAt: stat.mtime,
+          expiresAt: new Date(stat.mtimeMs + EXPIRE_HOURS * 60 * 60 * 1000)
+        };
+      }))).filter(Boolean);
+      res.json(files);
+    } catch {
+      res.json([]);
+    }
   });
 
-  app.delete('/api/videos/:filename', (req, res) => {
+  app.delete('/api/videos/:filename', async (req, res) => {
     const filename = path.basename(req.params.filename);
     const filePath = path.join(UPLOAD_DIR, filename);
-
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'Vídeo não encontrado.' });
+    try {
+      await fs.promises.unlink(filePath);
+      res.json({ success: true });
+    } catch (err) {
+      if (err.code === 'ENOENT') return res.status(404).json({ error: 'Vídeo não encontrado.' });
+      throw err;
     }
-
-    fs.unlinkSync(filePath);
-    res.json({ success: true });
   });
 
   return app;
