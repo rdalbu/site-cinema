@@ -15,6 +15,9 @@ let mediaSource  = null;
 let sourceBuffer = null;
 const queue      = [];
 let ended        = false;
+let playAttempted = false;
+
+const MAX_QUEUE = 200;
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
 function showToast(msg, duration = 3000) {
@@ -25,7 +28,6 @@ function showToast(msg, duration = 3000) {
 
 // ── MediaSource setup ─────────────────────────────────────────────────────────
 function setupMediaSource(mimeType) {
-  // Fallback: se o tipo não for suportado, tenta sem codec explícito
   const supported = MediaSource.isTypeSupported(mimeType);
   const type = supported ? mimeType : (mimeType.split(';')[0]);
 
@@ -55,13 +57,19 @@ function processQueue() {
     sourceBuffer.appendBuffer(chunk);
   } catch (e) {
     if (e.name === 'QuotaExceededError') {
-      // Remove primeiros 30s para liberar espaço
       if (sourceBuffer.buffered.length > 0) {
-        const removeEnd = Math.max(0, sourceBuffer.buffered.end(0) - 30);
-        if (removeEnd > sourceBuffer.buffered.start(0)) {
-          sourceBuffer.remove(sourceBuffer.buffered.start(0), removeEnd);
-          queue.unshift(chunk); // retry após remoção
+        const start = sourceBuffer.buffered.start(0);
+        const end = sourceBuffer.buffered.end(0);
+        // Keep last 30s; if less than 30s buffered, keep from currentTime-1
+        const removeEnd = end - 30 > start ? end - 30 : Math.max(start, player.currentTime - 1);
+        if (removeEnd > start) {
+          sourceBuffer.remove(start, removeEnd);
+          queue.unshift(chunk); // retry after removal fires updateend
+        } else {
+          console.warn('QuotaExceededError: cannot free space, dropping chunk.');
         }
+      } else {
+        console.warn('QuotaExceededError: no buffered range to evict, dropping chunk.');
       }
     } else {
       console.error('appendBuffer:', e);
@@ -71,8 +79,10 @@ function processQueue() {
 
 function endStream() {
   if (!mediaSource || mediaSource.readyState !== 'open') return;
+  let attempts = 0;
   const tryEnd = () => {
-    if (sourceBuffer && sourceBuffer.updating) {
+    if (attempts++ > 50) return; // 5s max wait
+    if ((sourceBuffer && sourceBuffer.updating) || queue.length > 0) {
       setTimeout(tryEnd, 100);
       return;
     }
@@ -91,6 +101,7 @@ function showError(title, msg) {
   videoWrap.classList.add('hidden');
   watchInfo.classList.add('hidden');
   watchError.classList.remove('hidden');
+  queue.length = 0; // clear pending chunks
   errorTitle.textContent = title;
   errorMsg.textContent = msg;
 }
@@ -98,6 +109,11 @@ function showError(title, msg) {
 // ── WebSocket connection ──────────────────────────────────────────────────────
 function connect() {
   const roomId = location.pathname.split('/').pop();
+  if (!roomId) {
+    showError('Sala inválida', 'ID da sala não encontrado na URL.');
+    return;
+  }
+
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws?role=viewer&room=${roomId}`);
   ws.binaryType = 'arraybuffer';
@@ -114,7 +130,7 @@ function connect() {
           streamState.textContent = 'Conectado';
           break;
         case 'buffer':
-          streamState.textContent = `Sincronizando (${msg.chunks} chunks)...`;
+          streamState.textContent = `Sincronizando (${msg.chunks ?? '?'} chunks)...`;
           break;
         case 'pause':
           player.pause();
@@ -141,11 +157,10 @@ function connect() {
           break;
       }
     } else {
-      // Chunk binário
-      queue.push(e.data);
+      if (queue.length < MAX_QUEUE) queue.push(e.data);
       processQueue();
-      // Autoplay assim que tiver dados suficientes
-      if (player.paused && !ended) {
+      if (!playAttempted && !ended) {
+        playAttempted = true;
         player.play().catch(() => {});
       }
     }
