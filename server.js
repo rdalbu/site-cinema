@@ -1,156 +1,169 @@
 const express = require('express');
+const http = require('http');
 const path = require('path');
-const fs = require('fs');
-const multer = require('multer');
+const WebSocket = require('ws');
 
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
-const EXPIRE_HOURS = parseInt(process.env.EXPIRE_HOURS || '24', 10);
+const MAX_BUFFER_CHUNKS = parseInt(process.env.MAX_BUFFER_CHUNKS || '30', 10);
+
+// ── Room management (pure, testable) ─────────────────────────────────────────
+
+function generateRoomId() {
+  return Math.random().toString(36).slice(2, 8).toUpperCase();
+}
+
+function createRoom(mimeType) {
+  return { mimeType, broadcaster: null, viewers: new Set(), buffer: [] };
+}
+
+function addChunk(room, chunk) {
+  room.buffer.push(chunk);
+  if (room.buffer.length > MAX_BUFFER_CHUNKS) room.buffer.shift();
+}
+
+function broadcastToViewers(room, data) {
+  room.viewers.forEach(v => {
+    if (v.readyState === WebSocket.OPEN) v.send(data);
+  });
+}
+
+function notifyViewerCount(room) {
+  const msg = JSON.stringify({ type: 'viewers', count: room.viewers.size });
+  if (room.broadcaster && room.broadcaster.readyState === WebSocket.OPEN) {
+    room.broadcaster.send(msg);
+  }
+  broadcastToViewers(room, msg);
+}
+
+function cleanupRoom(roomId, rooms) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  room.viewers.forEach(v => { if (v.readyState === WebSocket.OPEN) v.close(); });
+  rooms.delete(roomId);
+}
+
+// ── WebSocket handlers ────────────────────────────────────────────────────────
+
+function handleHost(ws, rooms) {
+  let roomId = null;
+
+  ws.on('message', (data, isBinary) => {
+    if (!isBinary) {
+      let msg;
+      try { msg = JSON.parse(data.toString()); } catch { return; }
+
+      if (msg.type === 'create') {
+        roomId = generateRoomId();
+        const room = createRoom(msg.mimeType || 'video/mp4');
+        room.broadcaster = ws;
+        rooms.set(roomId, room);
+        ws.send(JSON.stringify({ type: 'room', roomId }));
+      } else if (msg.type === 'pause' || msg.type === 'resume') {
+        const room = rooms.get(roomId);
+        if (room) broadcastToViewers(room, JSON.stringify({ type: msg.type }));
+      } else if (msg.type === 'end') {
+        const room = rooms.get(roomId);
+        if (room) broadcastToViewers(room, JSON.stringify({ type: 'end' }));
+        cleanupRoom(roomId, rooms);
+        roomId = null;
+      }
+    } else {
+      const room = rooms.get(roomId);
+      if (!room) return;
+      addChunk(room, data);
+      broadcastToViewers(room, data);
+      ws.send(JSON.stringify({ type: 'ack' }));
+    }
+  });
+
+  ws.on('close', () => {
+    if (!roomId) return;
+    const room = rooms.get(roomId);
+    if (room) broadcastToViewers(room, JSON.stringify({ type: 'end' }));
+    cleanupRoom(roomId, rooms);
+  });
+}
+
+function handleViewer(ws, roomId, rooms) {
+  const room = rooms.get(roomId);
+  if (!room) {
+    ws.send(JSON.stringify({ type: 'error', message: 'Sala não encontrada.' }));
+    ws.close();
+    return;
+  }
+
+  ws.send(JSON.stringify({ type: 'init', mimeType: room.mimeType }));
+
+  if (room.buffer.length > 0) {
+    ws.send(JSON.stringify({ type: 'buffer', chunks: room.buffer.length }));
+    room.buffer.forEach(chunk => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(chunk);
+    });
+  }
+
+  room.viewers.add(ws);
+  notifyViewerCount(room);
+
+  ws.on('close', () => {
+    room.viewers.delete(ws);
+    if (rooms.has(roomId)) notifyViewerCount(room);
+  });
+}
+
+// ── Express app ───────────────────────────────────────────────────────────────
 
 function createApp() {
   const app = express();
-
-  // Garante que a pasta uploads existe
-  if (!fs.existsSync(UPLOAD_DIR)) {
-    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-  }
-
   app.use(express.static(path.join(__dirname, 'public')));
-
-  const storage = multer.diskStorage({
-    destination: UPLOAD_DIR,
-    filename: (req, file, cb) => {
-      const timestamp = Date.now();
-      const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-      cb(null, `${timestamp}-${safe}`);
-    }
+  app.get('/watch/:roomId', (_req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'watch.html'));
   });
-
-  const upload = multer({ storage });
-
-  app.post('/api/upload', upload.single('video'), (req, res) => {
-    if (!req.file) {
-      return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
-    }
-    res.json({
-      filename: req.file.filename,
-      url: `/video/${req.file.filename}`
-    });
-  });
-
-  app.get('/video/:filename', (req, res) => {
-    const filename = path.basename(req.params.filename); // evita path traversal
-    const filePath = path.join(UPLOAD_DIR, filename);
-
-    fs.stat(filePath, (err, stat) => {
-      if (err) return res.status(404).json({ error: 'Vídeo não encontrado.' });
-
-      const fileSize = stat.size;
-      const range = req.headers.range;
-
-      if (range) {
-        const parts = range.replace(/bytes=/, '').split('-');
-        const start = parseInt(parts[0], 10);
-        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-
-        if (isNaN(start) || isNaN(end) || start > end || start >= fileSize) {
-          return res.status(416).set('Content-Range', `bytes */${fileSize}`).end();
-        }
-
-        const chunkSize = end - start + 1;
-
-        res.writeHead(206, {
-          'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-          'Accept-Ranges': 'bytes',
-          'Content-Length': chunkSize,
-          'Content-Type': 'video/mp4'
-        });
-        fs.createReadStream(filePath, { start, end })
-          .on('error', () => res.destroy())
-          .pipe(res);
-      } else {
-        res.writeHead(200, {
-          'Content-Length': fileSize,
-          'Content-Type': 'video/mp4',
-          'Accept-Ranges': 'bytes'
-        });
-        fs.createReadStream(filePath)
-          .on('error', () => res.destroy())
-          .pipe(res);
-      }
-    });
-  });
-
-  app.get('/api/videos', async (req, res) => {
-    try {
-      const filenames = await fs.promises.readdir(UPLOAD_DIR).catch(() => []);
-      const files = (await Promise.all(filenames.map(async filename => {
-        const filePath = path.join(UPLOAD_DIR, filename);
-        const stat = await fs.promises.stat(filePath);
-        if (!stat.isFile()) return null;
-        return {
-          filename,
-          url: `/video/${filename}`,
-          size: stat.size,
-          uploadedAt: stat.mtime,
-          expiresAt: new Date(stat.mtimeMs + EXPIRE_HOURS * 60 * 60 * 1000)
-        };
-      }))).filter(Boolean);
-      res.json(files);
-    } catch {
-      res.json([]);
-    }
-  });
-
-  app.delete('/api/videos/:filename', async (req, res) => {
-    const filename = path.basename(req.params.filename);
-    const filePath = path.join(UPLOAD_DIR, filename);
-    try {
-      await fs.promises.unlink(filePath);
-      res.json({ success: true });
-    } catch (err) {
-      if (err.code === 'ENOENT') return res.status(404).json({ error: 'Vídeo não encontrado.' });
-      throw err;
-    }
-  });
-
   return app;
 }
 
-function startExpiryJob() {
-  function deleteExpired() {
-    if (!fs.existsSync(UPLOAD_DIR)) return;
-    const now = Date.now();
-    fs.readdirSync(UPLOAD_DIR).forEach(filename => {
-      const filePath = path.join(UPLOAD_DIR, filename);
-      try {
-        const stat = fs.statSync(filePath);
-        if (!stat.isFile()) return;
-        const age = now - stat.mtimeMs;
-        if (age > EXPIRE_HOURS * 60 * 60 * 1000) {
-          fs.unlinkSync(filePath);
-          console.log(`[expiração] ${filename} apagado.`);
-        }
-      } catch (e) {
-        // arquivo já foi apagado entre o readdir e o stat — ignora
-      }
-    });
-  }
+// ── HTTP + WebSocket server ───────────────────────────────────────────────────
 
-  deleteExpired(); // roda imediatamente ao iniciar
-  const handle = setInterval(deleteExpired, 60 * 60 * 1000); // a cada 1 hora
-  handle.unref();
-  return handle;
+function createServer(app) {
+  const httpServer = http.createServer(app);
+  const wss = new WebSocket.Server({ server: httpServer, path: '/ws' });
+  const rooms = new Map();
+
+  wss.on('connection', (ws, req) => {
+    let url;
+    try { url = new URL(req.url, 'http://localhost'); } catch {
+      ws.close(1008, 'Bad URL');
+      return;
+    }
+    const role = url.searchParams.get('role');
+    const roomId = url.searchParams.get('room');
+
+    if (role === 'host') {
+      handleHost(ws, rooms);
+    } else if (role === 'viewer' && roomId) {
+      handleViewer(ws, roomId, rooms);
+    } else {
+      ws.close(1008, 'Missing role or room');
+    }
+  });
+
+  return httpServer;
 }
 
-// Só inicia o servidor se executado diretamente (não nos testes)
+// ── Entry point ───────────────────────────────────────────────────────────────
+
 if (require.main === module) {
   const app = createApp();
-  startExpiryJob(app);
+  const server = createServer(app);
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {
-    console.log(`Cinema Drive-in rodando na porta ${PORT}`);
-    console.log(`Vídeos expiram após ${EXPIRE_HOURS}h`);
+  server.listen(PORT, () => {
+    console.log(`Cinema Drive-in na porta ${PORT}`);
   });
 }
 
-module.exports = { createApp, startExpiryJob, UPLOAD_DIR, EXPIRE_HOURS };
+module.exports = {
+  createApp,
+  createServer,
+  createRoom,
+  addChunk,
+  generateRoomId,
+  MAX_BUFFER_CHUNKS
+};
