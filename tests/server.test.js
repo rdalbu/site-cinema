@@ -42,3 +42,29 @@ describe('POST /api/upload', () => {
     expect(res.body.url).toMatch(/\/video\//);
   });
 });
+
+describe('GET /video/:filename', () => {
+  const testFile = 'test-stream.mp4';
+  const testFilePath = path.join(UPLOAD_DIR, testFile);
+
+  beforeEach(() => {
+    if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+    fs.writeFileSync(testFilePath, 'fake video bytes for streaming test');
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(testFilePath)) fs.unlinkSync(testFilePath);
+  });
+
+  it('retorna 200 e o conteúdo do vídeo', async () => {
+    const app = createApp();
+    const res = await request(app).get(`/video/${testFile}`);
+    expect(res.status).toBe(200);
+  });
+
+  it('retorna 404 para arquivo inexistente', async () => {
+    const app = createApp();
+    const res = await request(app).get('/video/nao-existe.mp4');
+    expect(res.status).toBe(404);
+  });
+});
