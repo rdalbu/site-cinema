@@ -3,49 +3,77 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Cinema Drive-in</title>
+  <title>Cinema Drive-in — Host</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div class="container">
     <header>
       <h1>🎬 Cinema Drive-in</h1>
-      <p>Suba o vídeo, copie o link, passe no script de TV. Sem cookies.</p>
+      <p id="subtitle">Selecione o vídeo para iniciar a transmissão</p>
     </header>
 
-    <div id="drop-zone">
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-        <polyline points="17 8 12 3 7 8"/>
-        <line x1="12" y1="3" x2="12" y2="15"/>
-      </svg>
-      <p><strong>Clique ou arraste</strong> um vídeo aqui</p>
-      <p>Qualquer formato · Expira em 24h</p>
+    <!-- Step 1: selecionar arquivo -->
+    <div id="step-select">
+      <div id="drop-zone">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        <p><strong>Clique ou arraste</strong> o vídeo aqui</p>
+        <p class="hint">WebM ou MP4 H.264 recomendado</p>
+      </div>
+      <input type="file" id="file-input" accept="video/*">
     </div>
-    <input type="file" id="file-input" accept="video/*">
 
-    <div id="progress-container">
+    <!-- Step 2: transmitindo -->
+    <div id="step-live" class="hidden">
+      <div class="live-badge">● AO VIVO</div>
+
+      <div class="info-card">
+        <div class="info-row">
+          <span class="label">Arquivo</span>
+          <span id="file-name" class="value"></span>
+        </div>
+        <div class="info-row">
+          <span class="label">Espectadores</span>
+          <span id="viewer-count" class="value">0</span>
+        </div>
+        <div class="info-row">
+          <span class="label">Progresso</span>
+          <span id="progress-text" class="value">0%</span>
+        </div>
+      </div>
+
       <div id="progress-bar-wrap">
         <div id="progress-bar"></div>
       </div>
-      <p id="progress-label">0%</p>
-    </div>
 
-    <div id="player-section">
-      <video id="player" controls></video>
-      <div id="player-info">
-        <span id="player-title"></span>
-        <span id="player-url"></span>
+      <div class="share-box">
+        <p class="label">Link para espectadores</p>
+        <div class="share-row">
+          <code id="share-url"></code>
+          <button id="btn-copy" class="btn-copy">Copiar</button>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button id="btn-pause" class="btn-accent">⏸ Pausar</button>
+        <button id="btn-stop" class="btn-danger">⏹ Encerrar</button>
       </div>
     </div>
 
-    <div id="library">
-      <h2>Na Biblioteca</h2>
-      <ul id="video-list"></ul>
+    <!-- Step 3: encerrado -->
+    <div id="step-done" class="hidden">
+      <div class="done-box">
+        <p>Transmissão encerrada.</p>
+        <button id="btn-restart" class="btn-accent">Nova transmissão</button>
+      </div>
     </div>
   </div>
 
   <div id="toast"></div>
-  <script src="script.js"></script>
+  <script src="host.js"></script>
 </body>
 </html>
