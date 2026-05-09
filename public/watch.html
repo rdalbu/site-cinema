@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cinema Drive-in — Ao Vivo</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🎬 Cinema Drive-in</h1>
+      <p>Transmissão ao vivo</p>
+    </header>
+
+    <div id="watch-container">
+      <div id="video-wrap" class="hidden">
+        <video id="player" autoplay></video>
+        <div id="stream-status">● AO VIVO</div>
+      </div>
+
+      <div class="watch-info hidden" id="watch-info">
+        <span id="viewer-label">👥 <span id="viewer-count">—</span> assistindo</span>
+        <span id="stream-state">Conectando...</span>
+      </div>
+
+      <div id="watch-error" class="hidden">
+        <strong id="error-title">Transmissão indisponível</strong>
+        <span id="error-msg">Esta sala não existe ou já foi encerrada.</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+  <script src="/watch.js"></script>
+</body>
+</html>
