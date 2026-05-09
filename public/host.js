@@ -1,5 +1,4 @@
 const CHUNK_SIZE = 256 * 1024; // 256KB
-const BUFFER_AHEAD_SEC = 30;   // segundos à frente do tempo real permitidos
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let ws = null;
@@ -9,7 +8,10 @@ let paused = false;
 let waitingAck = false;
 let streamEnded = false;
 let roomReady = false;
-let streamStartTime = null; // relógio real de quando o primeiro chunk foi enviado
+let timerInterval = null;
+let streamStartTime = null;
+let totalPausedMs = 0;
+let pausedAt = null;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const dropZone     = document.getElementById('drop-zone');
@@ -20,7 +22,6 @@ const stepDone     = document.getElementById('step-done');
 const fileName     = document.getElementById('file-name');
 const viewerCount  = document.getElementById('viewer-count');
 const progressText = document.getElementById('progress-text');
-const progressBar  = document.getElementById('progress-bar');
 const shareUrl     = document.getElementById('share-url');
 const btnCopy      = document.getElementById('btn-copy');
 const btnPause     = document.getElementById('btn-pause');
@@ -34,13 +35,26 @@ function showToast(msg, duration = 2500) {
   setTimeout(() => toast.classList.remove('show'), duration);
 }
 
-// Quantos ms esperar: compara posição estimada no vídeo vs tempo real decorrido
-function throttleDelayMs() {
-  if (!streamStartTime || !file || !file._duration) return 0;
-  const elapsed = (Date.now() - streamStartTime) / 1000;
-  const streamPosSec = (offset / file.size) * file._duration;
-  const ahead = streamPosSec - elapsed;
-  return ahead > BUFFER_AHEAD_SEC ? (ahead - BUFFER_AHEAD_SEC) * 1000 : 0;
+function formatTime(totalSec) {
+  const s = Math.floor(totalSec);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+  return `${m}:${String(sec).padStart(2,'0')}`;
+}
+
+function startTimer() {
+  stopTimer();
+  timerInterval = setInterval(() => {
+    if (!streamStartTime || paused) return;
+    const elapsed = (Date.now() - streamStartTime - totalPausedMs) / 1000;
+    progressText.textContent = formatTime(elapsed);
+  }, 500);
+}
+
+function stopTimer() {
+  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
 }
 
 // ── File selection ────────────────────────────────────────────────────────────
@@ -51,35 +65,16 @@ dropZone.addEventListener('drop', e => {
   e.preventDefault();
   dropZone.classList.remove('drag-over');
   const f = e.dataTransfer.files[0];
-  if (f) loadAndStream(f);
+  if (f) startStream(f);
 });
 fileInput.addEventListener('change', () => {
-  if (fileInput.files[0]) loadAndStream(fileInput.files[0]);
+  if (fileInput.files[0]) startStream(fileInput.files[0]);
 });
-
-// Lê a duração do vídeo via elemento oculto antes de iniciar o stream
-function loadAndStream(selectedFile) {
-  const probe = document.createElement('video');
-  probe.preload = 'metadata';
-  probe.src = URL.createObjectURL(selectedFile);
-  probe.onloadedmetadata = () => {
-    selectedFile._duration = probe.duration || 0;
-    URL.revokeObjectURL(probe.src);
-    startStream(selectedFile);
-  };
-  probe.onerror = () => {
-    selectedFile._duration = 0;
-    startStream(selectedFile);
-  };
-}
 
 // ── Stream ────────────────────────────────────────────────────────────────────
 function startStream(selectedFile) {
-  if (ws) {
-    ws.onclose = null;
-    ws.onerror = null;
-    ws.close();
-  }
+  if (ws) { ws.onclose = null; ws.onerror = null; ws.close(); }
+  stopTimer();
 
   file = selectedFile;
   offset = 0;
@@ -88,6 +83,8 @@ function startStream(selectedFile) {
   streamEnded = false;
   roomReady = false;
   streamStartTime = null;
+  totalPausedMs = 0;
+  pausedAt = null;
 
   const mimeType = file.type || 'video/mp4';
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -110,10 +107,7 @@ function startStream(selectedFile) {
       sendNextChunk();
     } else if (msg.type === 'ack') {
       waitingAck = false;
-      if (!paused && !streamEnded) {
-        const delay = throttleDelayMs();
-        delay > 0 ? setTimeout(sendNextChunk, delay) : sendNextChunk();
-      }
+      if (!paused && !streamEnded) sendNextChunk();
     } else if (msg.type === 'viewers') {
       viewerCount.textContent = msg.count;
     }
@@ -131,21 +125,19 @@ function startStream(selectedFile) {
 function sendNextChunk() {
   if (!file || offset >= file.size || paused || waitingAck || streamEnded) return;
 
-  const delay = throttleDelayMs();
-  if (delay > 0) { setTimeout(sendNextChunk, delay); return; }
-
   const slice = file.slice(offset, offset + CHUNK_SIZE);
   const reader = new FileReader();
   reader.onload = (e) => {
     if (!ws || ws.readyState !== WebSocket.OPEN || paused || streamEnded) return;
-    if (!streamStartTime) streamStartTime = Date.now();
+
+    if (!streamStartTime) {
+      streamStartTime = Date.now();
+      startTimer();
+    }
+
     ws.send(e.target.result);
     waitingAck = true;
     offset += e.target.result.byteLength;
-
-    const pct = Math.min(100, Math.round((offset / file.size) * 100));
-    progressBar.style.width = pct + '%';
-    progressText.textContent = pct + '%';
 
     if (offset >= file.size) {
       streamEnded = true;
@@ -164,9 +156,16 @@ function sendNextChunk() {
 btnPause.addEventListener('click', () => {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   paused = !paused;
+
+  if (paused) {
+    pausedAt = Date.now();
+  } else {
+    if (pausedAt) { totalPausedMs += Date.now() - pausedAt; pausedAt = null; }
+    sendNextChunk();
+  }
+
   ws.send(JSON.stringify({ type: paused ? 'pause' : 'resume' }));
   btnPause.textContent = paused ? '▶ Retomar' : '⏸ Pausar';
-  if (!paused) sendNextChunk();
 });
 
 btnCopy.addEventListener('click', () => {
@@ -189,20 +188,23 @@ function copyFallback(text) {
 }
 
 btnRestart.addEventListener('click', () => {
+  stopTimer();
   stepDone.classList.add('hidden');
   stepSelect.classList.remove('hidden');
   fileInput.value = '';
-  progressBar.style.width = '0%';
-  progressText.textContent = '0%';
+  progressText.textContent = '0:00';
   viewerCount.textContent = '0';
   file = null;
   ws = null;
   roomReady = false;
   streamEnded = false;
   streamStartTime = null;
+  totalPausedMs = 0;
+  pausedAt = null;
 });
 
 function showDone() {
+  stopTimer();
   stepLive.classList.add('hidden');
   stepDone.classList.remove('hidden');
 }
