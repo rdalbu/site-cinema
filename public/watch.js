@@ -27,12 +27,24 @@ function showToast(msg, duration = 3000) {
 }
 
 // ── MediaSource setup ─────────────────────────────────────────────────────────
-function setupMediaSource(mimeType) {
-  const supported = MediaSource.isTypeSupported(mimeType);
-  const type = supported ? mimeType : (mimeType.split(';')[0]);
+const CODEC_FALLBACKS = {
+  'video/mp4':  ['video/mp4; codecs="avc1.42E01E, mp4a.40.2"', 'video/mp4; codecs="avc1.4D401F, mp4a.40.2"', 'video/mp4; codecs="avc1.640028"'],
+  'video/webm': ['video/webm; codecs="vp9, opus"', 'video/webm; codecs="vp8, vorbis"', 'video/webm; codecs="vp9"'],
+};
 
-  if (!MediaSource.isTypeSupported(type)) {
-    showError('Formato não suportado', `O formato "${type}" não é compatível com este browser. Use WebM ou MP4 H.264.`);
+function resolveType(mimeType) {
+  if (MediaSource.isTypeSupported(mimeType)) return mimeType;
+  const base = mimeType.split(';')[0].trim();
+  if (MediaSource.isTypeSupported(base)) return base;
+  const fallbacks = CODEC_FALLBACKS[base] || [];
+  return fallbacks.find(t => MediaSource.isTypeSupported(t)) || null;
+}
+
+function setupMediaSource(mimeType) {
+  const type = resolveType(mimeType);
+
+  if (!type) {
+    showError('Formato não suportado', `O formato "${mimeType.split(';')[0]}" não é compatível com este browser. Use WebM (VP9) ou MP4 H.264.`);
     return;
   }
 
