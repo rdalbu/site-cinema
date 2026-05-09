@@ -1,14 +1,22 @@
 # Cinema Drive-in
 
-Site de streaming de vídeo temporário para RP de cidade. Faça upload de um vídeo, copie a URL direta e cole no script de TV. Sem cookies, sem login.
+Streaming de vídeo ao vivo para RP de cidade. O vídeo fica no seu computador — nenhum arquivo é enviado ao servidor. Compartilhe o link com os espectadores e transmita em tempo real.
+
+## Como funciona
+
+1. Acesse o site → selecione o vídeo (ou arraste pra cima)
+2. Copie o link da sala que aparece
+3. Mande o link pro script de TV ou pros espectadores
+4. O vídeo transmite direto do seu PC via WebSocket
 
 ## Funcionalidades
 
-- Upload por arrastar & soltar ou clique
-- Streaming com Range headers (funciona em players de TV de RP)
-- Copia URL direta para o clipboard
-- Auto-delete após 24h
-- Botão de exclusão manual
+- Streaming ao vivo sem upload para o servidor
+- Zero armazenamento — vídeo fica no PC do host
+- Espectadores entram no ponto atual da transmissão
+- Contagem de espectadores em tempo real
+- Controles de pausar / retomar / encerrar
+- Funciona com WebM (VP8/VP9) e MP4 (H.264)
 
 ## Rodando localmente
 
@@ -19,20 +27,20 @@ npm start
 
 Acesse http://localhost:3000
 
-## Deploy no Railway
+## Deploy no Railway / Render
 
-1. Fork ou clone este repositório no GitHub
-2. No Railway: New Project → Deploy from GitHub repo → selecione este repo
-3. Railway detecta Node.js automaticamente
-4. (Opcional) Adicione a variável de ambiente `EXPIRE_HOURS` para mudar o tempo de expiração (padrão: 24)
+1. Push para o GitHub
+2. Conecte o repositório no Railway ou Render
+3. Detecta Node.js automaticamente — sem configuração extra
 
 ## Variáveis de ambiente
 
-| Variável       | Padrão | Descrição                   |
-|----------------|--------|-----------------------------|
-| `PORT`         | 3000   | Porta do servidor            |
-| `EXPIRE_HOURS` | 24     | Horas até auto-delete        |
+| Variável           | Padrão | Descrição                              |
+|--------------------|--------|----------------------------------------|
+| `PORT`             | 3000   | Porta do servidor                      |
+| `MAX_BUFFER_CHUNKS`| 30     | Chunks mantidos em memória por sala    |
 
-## Formato de vídeo
+## Formato recomendado
 
-O player usa o elemento `<video>` nativo do browser. Formatos suportados: MP4 (H.264), WebM, Ogg. Para melhor compatibilidade com scripts de TV de RP, use **MP4 H.264**.
+Use **WebM (VP8/VP9 + Opus)** para compatibilidade máxima com MediaSource Extensions.
+MP4 H.264 funciona no Chrome e Edge. Firefox tem suporte limitado a MP4 via MSE.
