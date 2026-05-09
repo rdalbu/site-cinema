@@ -2,7 +2,9 @@
   "name": "site-cinema",
   "version": "1.0.0",
   "description": "Cinema Drive-in — streaming temporário de vídeos",
+  "private": true,
   "main": "server.js",
+  "engines": { "node": ">=18" },
   "scripts": {
     "start": "node server.js",
     "test": "jest --testEnvironment node --forceExit"
