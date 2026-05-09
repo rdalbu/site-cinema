@@ -38,7 +38,7 @@ header p { color: var(--muted); font-size: 0.9rem; margin-top: 0.4rem; }
 }
 #drop-zone:hover, #drop-zone.drag-over {
   border-color: var(--accent);
-  background: rgba(232,180,0,0.05);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
 }
 #drop-zone svg { margin-bottom: 1rem; opacity: 0.5; }
 #drop-zone p { color: var(--muted); margin-top: 0.3rem; }
