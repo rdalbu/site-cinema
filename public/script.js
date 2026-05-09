@@ -40,7 +40,7 @@ function uploadFile(file) {
   xhr.open('POST', '/api/upload');
 
   progressContainer.style.display = 'block';
-  progressBar.style.width = '0';
+  progressBar.style.width = '0%';
   progressLabel.textContent = '0%';
 
   xhr.upload.addEventListener('progress', e => {
@@ -87,42 +87,68 @@ function timeUntil(dateStr) {
 }
 
 async function loadVideos() {
-  const res = await fetch('/api/videos');
-  const videos = await res.json();
+  try {
+    const res = await fetch('/api/videos');
+    const videos = await res.json();
 
-  if (videos.length === 0) {
-    videoList.innerHTML = '<li class="empty-state">Nenhum vídeo na biblioteca.</li>';
-    return;
+    if (videos.length === 0) {
+      videoList.innerHTML = '<li class="empty-state">Nenhum vídeo na biblioteca.</li>';
+      return;
+    }
+
+    videoList.innerHTML = '';
+    videos.forEach(v => {
+      const li = document.createElement('li');
+      li.className = 'video-item';
+      li.dataset.filename = v.filename;
+
+      const displayName = v.filename.replace(/^\d+-/, '');
+      const fullUrl = window.location.origin + v.url;
+
+      const info = document.createElement('div');
+      info.className = 'info';
+
+      const name = document.createElement('div');
+      name.className = 'name';
+      name.title = displayName;
+      name.textContent = displayName;
+
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = `${formatBytes(v.size)} · ${timeUntil(v.expiresAt)}`;
+
+      const actions = document.createElement('div');
+      actions.className = 'actions';
+
+      const btnPlay = document.createElement('button');
+      btnPlay.className = 'btn-play';
+      btnPlay.textContent = '▶ Play';
+      btnPlay.addEventListener('click', () => playVideo(v.url, displayName, fullUrl));
+
+      const btnCopy = document.createElement('button');
+      btnCopy.className = 'btn-copy';
+      btnCopy.textContent = 'Copiar URL';
+      btnCopy.addEventListener('click', () => copyUrl(fullUrl));
+
+      const btnDelete = document.createElement('button');
+      btnDelete.className = 'btn-delete';
+      btnDelete.textContent = 'Apagar';
+      btnDelete.addEventListener('click', () => deleteVideo(v.filename, btnDelete));
+
+      actions.append(btnPlay, btnCopy, btnDelete);
+      info.append(name, meta);
+      li.append(info, actions);
+      videoList.appendChild(li);
+    });
+  } catch {
+    showToast('Erro ao carregar biblioteca.');
   }
-
-  videoList.innerHTML = '';
-  videos.forEach(v => {
-    const li = document.createElement('li');
-    li.className = 'video-item';
-    li.dataset.filename = v.filename;
-
-    const displayName = v.filename.replace(/^\d+-/, '');
-    const fullUrl = window.location.origin + v.url;
-
-    li.innerHTML = `
-      <div class="info">
-        <div class="name" title="${displayName}">${displayName}</div>
-        <div class="meta">${formatBytes(v.size)} · ${timeUntil(v.expiresAt)}</div>
-      </div>
-      <div class="actions">
-        <button class="btn-play" onclick="playVideo('${v.url}', '${displayName}', '${fullUrl}')">▶ Play</button>
-        <button class="btn-copy" onclick="copyUrl('${fullUrl}')">Copiar URL</button>
-        <button class="btn-delete" onclick="deleteVideo('${v.filename}', this)">Apagar</button>
-      </div>
-    `;
-    videoList.appendChild(li);
-  });
 }
 
 // --- Player ---
 function playVideo(url, name, fullUrl) {
   player.src = url;
-  player.play();
+  player.play().catch(() => {});
   playerTitle.textContent = name;
   playerUrl.textContent = fullUrl;
   playerSection.style.display = 'block';
@@ -148,18 +174,23 @@ async function deleteVideo(filename, btn) {
   if (!confirm('Apagar este vídeo?')) return;
   btn.disabled = true;
 
-  const res = await fetch(`/api/videos/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+  try {
+    const res = await fetch(`/api/videos/${encodeURIComponent(filename)}`, { method: 'DELETE' });
 
-  if (res.ok) {
-    showToast('Vídeo apagado.');
-    if (player.src.includes(filename)) {
-      player.pause();
-      player.src = '';
-      playerSection.style.display = 'none';
+    if (res.ok) {
+      showToast('Vídeo apagado.');
+      if (player.src.includes(filename)) {
+        player.pause();
+        player.src = '';
+        playerSection.style.display = 'none';
+      }
+      loadVideos();
+    } else {
+      showToast('Erro ao apagar.');
+      btn.disabled = false;
     }
-    loadVideos();
-  } else {
-    showToast('Erro ao apagar.');
+  } catch {
+    showToast('Erro de conexão.');
     btn.disabled = false;
   }
 }
