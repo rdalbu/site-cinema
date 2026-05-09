@@ -116,13 +116,38 @@ function createApp() {
   return app;
 }
 
+function startExpiryJob(app) {
+  function deleteExpired() {
+    if (!fs.existsSync(UPLOAD_DIR)) return;
+    const now = Date.now();
+    fs.readdirSync(UPLOAD_DIR).forEach(filename => {
+      const filePath = path.join(UPLOAD_DIR, filename);
+      try {
+        const stat = fs.statSync(filePath);
+        const age = now - stat.mtimeMs;
+        if (age > EXPIRE_HOURS * 60 * 60 * 1000) {
+          fs.unlinkSync(filePath);
+          console.log(`[expiração] ${filename} apagado.`);
+        }
+      } catch (e) {
+        // arquivo já foi apagado entre o readdir e o stat — ignora
+      }
+    });
+  }
+
+  deleteExpired(); // roda imediatamente ao iniciar
+  return setInterval(deleteExpired, 60 * 60 * 1000); // a cada 1 hora
+}
+
 // Só inicia o servidor se executado diretamente (não nos testes)
 if (require.main === module) {
   const app = createApp();
+  startExpiryJob(app);
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
     console.log(`Cinema Drive-in rodando na porta ${PORT}`);
+    console.log(`Vídeos expiram após ${EXPIRE_HOURS}h`);
   });
 }
 
-module.exports = { createApp, UPLOAD_DIR, EXPIRE_HOURS };
+module.exports = { createApp, startExpiryJob, UPLOAD_DIR, EXPIRE_HOURS };
