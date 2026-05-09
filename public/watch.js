@@ -1,14 +1,14 @@
 // ── DOM refs ──────────────────────────────────────────────────────────────────
-const videoWrap   = document.getElementById('video-wrap');
-const player      = document.getElementById('player');
-const streamStatus= document.getElementById('stream-status');
-const watchInfo   = document.getElementById('watch-info');
-const viewerCount = document.getElementById('viewer-count');
-const streamState = document.getElementById('stream-state');
-const watchError  = document.getElementById('watch-error');
-const errorTitle  = document.getElementById('error-title');
-const errorMsg    = document.getElementById('error-msg');
-const toast       = document.getElementById('toast');
+const player        = document.getElementById('player');
+const overlayStatus = document.getElementById('overlay-status');
+const statusBadge   = document.getElementById('status-badge');
+const streamState   = document.getElementById('stream-state');
+const overlayViewers= document.getElementById('overlay-viewers');
+const viewerCount   = document.getElementById('viewer-count');
+const watchError    = document.getElementById('watch-error');
+const errorTitle    = document.getElementById('error-title');
+const errorMsg      = document.getElementById('error-msg');
+const loading       = document.getElementById('loading');
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let mediaSource  = null;
@@ -18,13 +18,6 @@ let ended        = false;
 let playAttempted = false;
 
 const MAX_QUEUE = 200;
-
-// ── Toast ─────────────────────────────────────────────────────────────────────
-function showToast(msg, duration = 3000) {
-  toast.textContent = msg;
-  toast.classList.add('show');
-  setTimeout(() => toast.classList.remove('show'), duration);
-}
 
 // ── MediaSource setup ─────────────────────────────────────────────────────────
 const CODEC_FALLBACKS = {
@@ -72,11 +65,10 @@ function processQueue() {
       if (sourceBuffer.buffered.length > 0) {
         const start = sourceBuffer.buffered.start(0);
         const end = sourceBuffer.buffered.end(0);
-        // Keep last 30s; if less than 30s buffered, keep from currentTime-1
         const removeEnd = end - 30 > start ? end - 30 : Math.max(start, player.currentTime - 1);
         if (removeEnd > start) {
           sourceBuffer.remove(start, removeEnd);
-          queue.unshift(chunk); // retry after removal fires updateend
+          queue.unshift(chunk);
         } else {
           console.warn('QuotaExceededError: cannot free space, dropping chunk.');
         }
@@ -93,7 +85,7 @@ function endStream() {
   if (!mediaSource || mediaSource.readyState !== 'open') return;
   let attempts = 0;
   const tryEnd = () => {
-    if (attempts++ > 50) return; // 5s max wait
+    if (attempts++ > 50) return;
     if ((sourceBuffer && sourceBuffer.updating) || queue.length > 0) {
       setTimeout(tryEnd, 100);
       return;
@@ -105,15 +97,17 @@ function endStream() {
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
 function showPlayer() {
-  videoWrap.classList.remove('hidden');
-  watchInfo.classList.remove('hidden');
+  loading.style.display = 'none';
+  overlayStatus.classList.add('visible');
+  overlayViewers.classList.add('visible');
 }
 
 function showError(title, msg) {
-  videoWrap.classList.add('hidden');
-  watchInfo.classList.add('hidden');
-  watchError.classList.remove('hidden');
-  queue.length = 0; // clear pending chunks
+  loading.style.display = 'none';
+  overlayStatus.classList.remove('visible');
+  overlayViewers.classList.remove('visible');
+  queue.length = 0;
+  watchError.style.display = 'flex';
   errorTitle.textContent = title;
   errorMsg.textContent = msg;
 }
@@ -139,19 +133,21 @@ function connect() {
         case 'init':
           setupMediaSource(msg.mimeType);
           showPlayer();
-          streamState.textContent = 'Conectado';
+          streamState.textContent = 'Ao vivo';
           break;
         case 'buffer':
-          streamState.textContent = `Sincronizando (${msg.chunks ?? '?'} chunks)...`;
+          streamState.textContent = `Sincronizando…`;
           break;
         case 'pause':
           player.pause();
-          streamStatus.textContent = '⏸ PAUSADO';
-          streamState.textContent = 'Pausado pelo host';
+          statusBadge.textContent = '⏸ PAUSADO';
+          statusBadge.className = 'paused';
+          streamState.textContent = 'Pausado';
           break;
         case 'resume':
           player.play().catch(() => {});
-          streamStatus.textContent = '● AO VIVO';
+          statusBadge.textContent = '● AO VIVO';
+          statusBadge.className = '';
           streamState.textContent = 'Ao vivo';
           break;
         case 'seek':
@@ -163,14 +159,14 @@ function connect() {
               try { sourceBuffer.remove(0, Infinity); } catch (_) {}
             }
           }
-          streamState.textContent = 'Sincronizando...';
+          streamState.textContent = 'Sincronizando…';
           break;
         case 'end':
           ended = true;
           endStream();
-          streamStatus.textContent = '■ ENCERRADO';
-          streamState.textContent = 'Transmissão encerrada';
-          showToast('A transmissão foi encerrada.');
+          statusBadge.textContent = '■ ENCERRADO';
+          statusBadge.className = 'ended';
+          streamState.textContent = 'Encerrado';
           break;
         case 'viewers':
           viewerCount.textContent = msg.count;
@@ -191,12 +187,15 @@ function connect() {
 
   ws.onclose = () => {
     if (!ended) {
-      streamState.textContent = 'Desconectado';
-      showToast('Conexão perdida com o servidor.');
+      statusBadge.textContent = '✕ DESCONECTADO';
+      statusBadge.className = 'ended';
+      streamState.textContent = 'Conexão perdida';
     }
   };
 
-  ws.onerror = () => showToast('Erro ao conectar. Recarregue a página.');
+  ws.onerror = () => {
+    streamState.textContent = 'Erro de conexão';
+  };
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────

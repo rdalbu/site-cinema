@@ -3,35 +3,118 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Cinema Drive-in — Ao Vivo</title>
-  <link rel="stylesheet" href="/style.css">
+  <title>Cinema Drive-in</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%; height: 100%;
+      background: #000;
+      overflow: hidden;
+    }
+
+    #player {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #000;
+    }
+
+    /* Overlays */
+    #overlay-status {
+      position: fixed;
+      top: 1rem;
+      left: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: #fff;
+      opacity: 0;
+      transition: opacity 0.4s;
+      pointer-events: none;
+    }
+    #overlay-status.visible { opacity: 1; }
+
+    #status-badge {
+      background: #c0392b;
+      padding: 0.2rem 0.55rem;
+      border-radius: 3px;
+      animation: pulse 2s infinite;
+    }
+    #status-badge.paused  { background: #888; animation: none; }
+    #status-badge.ended   { background: #333; animation: none; }
+
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+
+    #overlay-viewers {
+      position: fixed;
+      top: 1rem;
+      right: 1rem;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 0.78rem;
+      color: rgba(255,255,255,0.7);
+      background: rgba(0,0,0,0.5);
+      padding: 0.2rem 0.6rem;
+      border-radius: 3px;
+      opacity: 0;
+      transition: opacity 0.4s;
+      pointer-events: none;
+    }
+    #overlay-viewers.visible { opacity: 1; }
+
+    /* Error / loading state */
+    #watch-error {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: #888;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      text-align: center;
+      padding: 2rem;
+      display: none;
+    }
+    #watch-error strong { display: block; font-size: 1.2rem; color: #f0f0f0; margin-bottom: 0.5rem; }
+
+    #loading {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #444;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 0.9rem;
+    }
+  </style>
 </head>
 <body>
-  <div class="container">
-    <header>
-      <h1>🎬 Cinema Drive-in</h1>
-      <p>Transmissão ao vivo</p>
-    </header>
+  <video id="player" autoplay muted playsinline></video>
 
-    <div id="watch-container">
-      <div id="video-wrap" class="hidden">
-        <video id="player" autoplay muted playsinline></video>
-        <div id="stream-status" role="status" aria-live="polite"><span aria-hidden="true">●</span> AO VIVO</div>
-      </div>
-
-      <div class="watch-info hidden" id="watch-info">
-        <span id="viewer-label">👥 <span id="viewer-count">—</span> assistindo</span>
-        <span id="stream-state">Conectando...</span>
-      </div>
-
-      <div id="watch-error" class="hidden">
-        <strong id="error-title">Transmissão indisponível</strong>
-        <span id="error-msg">Esta sala não existe ou já foi encerrada.</span>
-      </div>
-    </div>
+  <div id="overlay-status">
+    <span id="status-badge">● AO VIVO</span>
+    <span id="stream-state">Conectando...</span>
   </div>
 
-  <div id="toast"></div>
+  <div id="overlay-viewers">
+    👥 <span id="viewer-count">—</span>
+  </div>
+
+  <div id="watch-error">
+    <strong id="error-title">Transmissão indisponível</strong>
+    <span id="error-msg">Esta sala não existe ou já foi encerrada.</span>
+  </div>
+
+  <div id="loading">Aguardando transmissão…</div>
+
   <script src="/watch.js"></script>
 </body>
 </html>
