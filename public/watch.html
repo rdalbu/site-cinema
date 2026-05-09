@@ -94,6 +94,31 @@
       font-family: 'Segoe UI', system-ui, sans-serif;
       font-size: 0.9rem;
     }
+
+    #volume-control {
+      position: fixed;
+      bottom: 1rem;
+      right: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: rgba(0,0,0,0.55);
+      padding: 0.35rem 0.7rem;
+      border-radius: 20px;
+      opacity: 0;
+      transition: opacity 0.3s;
+      pointer-events: none;
+    }
+    #volume-control.visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    #vol-icon { font-size: 0.85rem; cursor: pointer; user-select: none; }
+    #vol-slider {
+      width: 80px;
+      accent-color: #e8b400;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
@@ -106,6 +131,11 @@
 
   <div id="overlay-viewers">
     👥 <span id="viewer-count">—</span>
+  </div>
+
+  <div id="volume-control">
+    <span id="vol-icon">🔊</span>
+    <input type="range" id="vol-slider" min="0" max="100" value="100">
   </div>
 
   <div id="watch-error">

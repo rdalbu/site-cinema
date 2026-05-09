@@ -1,4 +1,5 @@
 const CHUNK_SIZE = 256 * 1024; // 256KB
+const BUFFER_AHEAD_SEC = 15;   // máximo de segundos à frente do tempo real
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let ws = null;
@@ -22,7 +23,6 @@ const progressBar  = document.getElementById('progress-bar');
 const shareUrl     = document.getElementById('share-url');
 const btnCopy      = document.getElementById('btn-copy');
 const btnPause     = document.getElementById('btn-pause');
-const btnStop      = document.getElementById('btn-stop');
 const btnRestart   = document.getElementById('btn-restart');
 const hostPlayer   = document.getElementById('host-player');
 const toast        = document.getElementById('toast');
@@ -40,7 +40,18 @@ function formatTime(s) {
   return `${m}:${String(sec % 60).padStart(2, '0')}`;
 }
 
-// ── Local player events (registered once) ─────────────────────────────────────
+function streamPositionSec() {
+  if (!file || !hostPlayer.duration) return 0;
+  return (offset / file.size) * hostPlayer.duration;
+}
+
+function throttleDelayMs() {
+  if (!hostPlayer.duration) return 0;
+  const ahead = streamPositionSec() - (hostPlayer.currentTime || 0);
+  return ahead > BUFFER_AHEAD_SEC ? (ahead - BUFFER_AHEAD_SEC) * 1000 : 0;
+}
+
+// ── Local player events ───────────────────────────────────────────────────────
 hostPlayer.addEventListener('loadedmetadata', () => {
   progressText.textContent = `0:00 / ${formatTime(hostPlayer.duration)}`;
 });
@@ -51,12 +62,12 @@ hostPlayer.addEventListener('timeupdate', () => {
 });
 
 hostPlayer.addEventListener('seeked', () => {
-  if (!file || !ws || ws.readyState !== WebSocket.OPEN || streamEnded || paused) return;
+  if (!file || !ws || ws.readyState !== WebSocket.OPEN || streamEnded) return;
   const ratio = hostPlayer.currentTime / (hostPlayer.duration || 1);
   offset = Math.floor(ratio * file.size);
   waitingAck = false;
   ws.send(JSON.stringify({ type: 'seek', time: hostPlayer.currentTime }));
-  sendNextChunk();
+  if (!paused) sendNextChunk();
 });
 
 // ── File selection ────────────────────────────────────────────────────────────
@@ -113,7 +124,14 @@ function startStream(selectedFile) {
       sendNextChunk();
     } else if (msg.type === 'ack') {
       waitingAck = false;
-      if (!paused && !streamEnded) sendNextChunk();
+      if (!paused && !streamEnded) {
+        const delay = throttleDelayMs();
+        if (delay > 0) {
+          setTimeout(sendNextChunk, delay);
+        } else {
+          sendNextChunk();
+        }
+      }
     } else if (msg.type === 'viewers') {
       viewerCount.textContent = msg.count;
     }
@@ -121,11 +139,8 @@ function startStream(selectedFile) {
 
   ws.onclose = () => {
     if (streamEnded) return;
-    if (roomReady) {
-      showDone();
-    } else {
-      showToast('Falha ao conectar com o servidor.');
-    }
+    if (roomReady) showDone();
+    else showToast('Falha ao conectar com o servidor.');
   };
 
   ws.onerror = () => showToast('Erro de conexão WebSocket.');
@@ -133,6 +148,12 @@ function startStream(selectedFile) {
 
 function sendNextChunk() {
   if (!file || offset >= file.size || paused || waitingAck || streamEnded) return;
+
+  const delay = throttleDelayMs();
+  if (delay > 0) {
+    setTimeout(sendNextChunk, delay);
+    return;
+  }
 
   const slice = file.slice(offset, offset + CHUNK_SIZE);
   const reader = new FileReader();
@@ -148,11 +169,11 @@ function sendNextChunk() {
     if (offset >= file.size) {
       streamEnded = true;
       ws.send(JSON.stringify({ type: 'end' }));
-      showDone();
+      hostPlayer.addEventListener('ended', showDone, { once: true });
     }
   };
   reader.onerror = () => {
-    showToast('Erro ao ler o arquivo. Tente novamente.');
+    showToast('Erro ao ler o arquivo.');
     streamEnded = true;
   };
   reader.readAsArrayBuffer(slice);
@@ -165,14 +186,6 @@ btnPause.addEventListener('click', () => {
   ws.send(JSON.stringify({ type: paused ? 'pause' : 'resume' }));
   btnPause.textContent = paused ? '▶ Retomar' : '⏸ Pausar';
   if (!paused) sendNextChunk();
-});
-
-btnStop.addEventListener('click', () => {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  streamEnded = true;
-  ws.send(JSON.stringify({ type: 'end' }));
-  ws.close();
-  showDone();
 });
 
 btnCopy.addEventListener('click', () => {

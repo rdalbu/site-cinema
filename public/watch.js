@@ -9,6 +9,9 @@ const watchError    = document.getElementById('watch-error');
 const errorTitle    = document.getElementById('error-title');
 const errorMsg      = document.getElementById('error-msg');
 const loading       = document.getElementById('loading');
+const volumeControl = document.getElementById('volume-control');
+const volSlider     = document.getElementById('vol-slider');
+const volIcon       = document.getElementById('vol-icon');
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let ended = false;
@@ -18,6 +21,7 @@ function showPlayer() {
   loading.style.display = 'none';
   overlayStatus.classList.add('visible');
   overlayViewers.classList.add('visible');
+  volumeControl.classList.add('visible');
 }
 
 function showError(title, msg) {
@@ -106,6 +110,27 @@ function connect() {
     streamState.textContent = 'Erro de conexão';
   };
 }
+
+// ── Volume control ────────────────────────────────────────────────────────────
+volSlider.addEventListener('input', () => {
+  const v = volSlider.value / 100;
+  player.volume = v;
+  player.muted = v === 0;
+  volIcon.textContent = v === 0 ? '🔇' : v < 0.5 ? '🔉' : '🔊';
+});
+
+volIcon.addEventListener('click', () => {
+  if (player.muted || player.volume === 0) {
+    player.muted = false;
+    player.volume = 1;
+    volSlider.value = 100;
+    volIcon.textContent = '🔊';
+  } else {
+    player.muted = true;
+    volSlider.value = 0;
+    volIcon.textContent = '🔇';
+  }
+});
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 connect();
