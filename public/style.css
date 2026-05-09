@@ -145,15 +145,6 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 .done-box p { color: var(--muted); margin-bottom: 1.25rem; }
 
-/* Host player */
-#host-player-wrap {
-  background: #000;
-  border-radius: 8px;
-  overflow: hidden;
-  margin-bottom: 1rem;
-}
-#host-player { width: 100%; display: block; max-height: 50vh; }
-
 /* ── Watch page ───────────────────────────────────────────────────────────── */
 
 #watch-container { text-align: center; }
